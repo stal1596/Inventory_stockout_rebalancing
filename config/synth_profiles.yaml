@@ -1,0 +1,126 @@
+# Generation profiles for the synthetic extract.
+#
+# Row counts below are for inventory_daily / sales_pos, which dominate volume:
+#   rows ~= n_stores * skus_per_store * n_days
+
+defaults:
+  seed: 20260809
+  start_date: "2025-06-01"
+  # Demand: units ~ NegBinomial(mean=lambda, dispersion=k). Lower k = burstier.
+  nb_dispersion: 2.5
+  # Base daily demand per SKU-size before any multiplier, by store tier.
+  tier_base_demand:
+    "Tier 1": 0.55
+    "Tier 2": 0.35
+    "Tier 3": 0.20
+  # Relative demand by size position within a size run (popularity curve peaks
+  # at mid sizes; the tails are what actually break first).
+  size_popularity: [0.25, 0.55, 0.90, 1.00, 0.95, 0.70, 0.40, 0.20]
+  weekday_factor:   # Mon..Sun
+    [0.80, 0.75, 0.85, 0.95, 1.30, 1.65, 1.45]
+  # Multiplicative lift applied on promotion_flag / holiday_flag days.
+  promo_lift: 1.9
+  holiday_lift: 1.4
+  # Annual seasonality amplitude (sinusoid peaking in the festive window).
+  seasonality_amplitude: 0.35
+  seasonality_peak_doy: 295          # ~late October
+
+  # Replenishment policy. This is what creates the competing risk: a spell can
+  # end because stock hit zero (event) OR because a replenishment landed first.
+  reorder_point_days_cover: 12
+  order_up_to_days_cover: 35
+  dc_lead_time_days: [3, 9]          # uniform draw, DC -> store
+  review_period_days: 7              # stores are reviewed weekly
+  dc_fill_rate: 0.88                 # fraction of replen lines actually served
+
+  # Lifecycle / censoring
+  discontinue_rate: 0.06             # fraction of SKUs discontinued mid-window
+  store_open_late_rate: 0.04         # stores that enter after the window start
+  initial_stock_days_cover: [8, 40]  # seeds left-truncated spells
+
+profiles:
+
+  # Small enough to generate inside a unit test, but large enough to clear the
+  # minimum event count so the survival checks are exercised rather than skipped.
+  tiny:
+    n_stores: 4
+    n_styles: 6
+    colors_per_style: [1, 2]
+    sizes_per_option: 4
+    skus_per_store: 24
+    n_days: 60
+
+  dev:
+    n_stores: 12
+    n_styles: 24                     # dns_item combinations
+    colors_per_style: [1, 3]
+    sizes_per_option: 8
+    skus_per_store: 250
+    n_days: 180
+
+  medium:
+    n_stores: 60
+    n_styles: 90
+    colors_per_style: [1, 4]
+    sizes_per_option: 8
+    skus_per_store: 800
+    n_days: 365
+
+  full:
+    n_stores: 150
+    n_styles: 220
+    colors_per_style: [1, 5]
+    sizes_per_option: 9
+    skus_per_store: 2000
+    n_days: 730
+    partition_by: [year, month]
+
+# Defects reproduced by --inject-defects, each mapped to the validation check
+# that must catch it. tests/test_validations_catch_defects.py asserts this map.
+defects:
+  excel_broken_dates:
+    description: Overwrite date cells with the literal "########".
+    tables: [inventory_daily, replenishment_orders, promotion_data]
+    expect_check: structural.date_artifact
+  store_id_o_zero_confusion:
+    description: Replace digit 0 with letter O in some inventory store ids.
+    tables: [inventory_daily]
+    # The lookup-assisted repair resolves these against store_dim, so the join
+    # itself survives. What must not happen is the repair being silent.
+    expect_check: referential.store_id_repaired
+  duplicate_replenishment_rows:
+    description: Duplicate (store, sku, size) lines with differing stock, no line id.
+    tables: [replenishment_orders]
+    expect_check: grain.duplicate_key
+  constant_po_no:
+    description: Set every Po_No to 4500000000.
+    tables: [pending_orders]
+    expect_check: accounting.po_no_is_identifying
+  constant_warehouse_id:
+    description: Set every Warehouse_ID to the literal "Warehouse".
+    tables: [replenishment_orders]
+    expect_check: accounting.warehouse_id_is_identifying
+  brand_typo:
+    description: Emit "LOOM & PACE" alongside "LOOM & LACE".
+    tables: [inventory_daily]
+    expect_check: referential.brand_variant
+  mixed_size_scales:
+    description: Emit an 83-90 size block next to the 28-48 EU block.
+    tables: [inventory_daily, pending_orders]
+    expect_check: referential.size_scale
+  uppercase_promo_cities:
+    description: Upper-case promotion city names so they miss store_dim.
+    tables: [promotion_data]
+    expect_check: referential.promotion_city_in_store_dim
+  orphan_sku_keys:
+    description: Emit inventory rows for SKUs absent from product_dim.
+    tables: [inventory_daily]
+    expect_check: referential.inventory_sku_in_product_dim
+  broken_stock_identity:
+    description: Perturb store_stock so the components stop summing to opening_stk.
+    tables: [inventory_daily]
+    expect_check: accounting.stock_components_sum_to_opening
+  zero_store_capacity:
+    description: Zero out PAIRS_CAPACITY for most stores.
+    tables: [store_dim]
+    expect_check: accounting.store_capacity_present

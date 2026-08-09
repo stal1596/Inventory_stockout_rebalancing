@@ -1,0 +1,10 @@
+# Generated synthetic extracts — reproducible via scripts/generate_synthetic.py
+data/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+uv.lock

@@ -1,0 +1,133 @@
+check,table,passed,severity,summary,n_bad,n_total,bad_rate,examples,detail
+temporal.common_window,(cross-table),False,error,"No common window: inventory_daily, sales_pos, replenishment_orders contributes no usable dates",3,3,1.0,"inventory_daily, sales_pos, replenishment_orders","Kaplan-Meier needs inventory, sales and replenishment observed over the same period. Without every one of them there is no window in which a spell can start, run and end."
+survival.spells_constructible,(derived),False,error,No spells could be constructed,0,0,0.0,,With no spell table there is nothing for a survival estimator to consume.
+structural.date_artifact,external_signals_fact,False,error,post_datetime: 13 destroyed date cell(s),13,13,1.0,########,Column overflow was baked into the export. The underlying values are gone and must be re-extracted; widen the column or export dates as ISO text.
+temporal.coverage,external_signals_fact,False,error,No usable dates at all,13,13,1.0,,"Every date value is missing, destroyed or unparseable, so this table has no time dimension."
+referential.forecast_option_in_product_dim,forecast,False,error,0.0% of forecast.option_uid found in product_dim (1 orphan value(s)),11,11,1.0,14_1002_BLACK,Below the 99% threshold. Rows that fail to join are dropped from the panel and their risk days vanish.
+structural.date_artifact,forecast,False,error,Date: 11 destroyed date cell(s),11,11,1.0,########,Column overflow was baked into the export. The underlying values are gone and must be re-extracted; widen the column or export dates as ISO text.
+referential.inventory_sku_in_product_dim,inventory_daily,False,error,0.0% of inventory_daily.sku_uid found in product_dim (3 orphan value(s)),3,3,1.0,"14_1033_TAN_41, 14_1033_TAN_43, 14_1033_TAN_45",Below the 99% threshold. Rows that fail to join are dropped from the panel and their risk days vanish.
+structural.date_artifact,inventory_daily,False,error,Date: 3 destroyed date cell(s),3,3,1.0,########,Column overflow was baked into the export. The underlying values are gone and must be re-extracted; widen the column or export dates as ISO text.
+survival.inventory_history,inventory_daily,False,error,No multi-date inventory history,0,3,0.0,,"A single snapshot shows a stock level, never a stock-out moment. Without repeated observations there is no duration to measure and no event to observe."
+temporal.coverage,inventory_daily,False,error,No usable dates at all,3,3,1.0,,"Every date value is missing, destroyed or unparseable, so this table has no time dimension."
+accounting.po_no_is_identifying,pending_orders,False,error,Po_No is a single constant value,1,1,1.0,Po_No=4500000000,Constant 4500000000 on all 16 real sample rows - not a usable key.
+referential.size_scale,pending_orders,False,error,"Scales present: {'ALT': np.int64(9), 'EU': np.int64(7)}",7,16,0.4375,"83, 84, 85, 86, 87","The 28-48 EU run and the 83-90 block are different systems. Without a scale map they must not share a column, and a SKU uid built from them is not comparable."
+structural.date_artifact,promotion_data,False,error,date: 12 destroyed date cell(s),12,12,1.0,########,Column overflow was baked into the export. The underlying values are gone and must be re-extracted; widen the column or export dates as ISO text.
+temporal.coverage,promotion_data,False,error,No usable dates at all,12,12,1.0,,"Every date value is missing, destroyed or unparseable, so this table has no time dimension."
+accounting.warehouse_id_is_identifying,replenishment_orders,False,error,Warehouse_ID is a single constant value,1,1,1.0,Warehouse_ID=Warehouse,"Literal constant ""Warehouse"" on all 12 real sample rows. Without a real warehouse identity there are no DC->store lanes and no rebalancing."
+grain.canonical_grain,replenishment_orders,False,error,10 rows share a canonical key,10,12,0.8333333333333334,"GGS01 | 71_8440_BROWN_48 | NaT, NCS01 | 33_213_BLACK_38 | NaT, LUS06 | 57_38_ROSE-GOLD_34 | NaT",
+grain.duplicate_key,replenishment_orders,False,error,4 key(s) repeat across 10 rows,10,12,0.8333333333333334,"GGS01 | METRO_71_8440_BROWN | 48 | ########, NCS01 | METRO_33_213_BLACK | 38 | ########, LUS06 | METRO_57_38_ROSE_GOLD | 34 | ########","Declared grain ['Store_ID', 'SKU', 'Size', 'Order_Date'] does not identify a row. Add a line number or a full timestamp, or the rows cannot be ordered or deduplicated."
+referential.replenishment_sku_in_product_dim,replenishment_orders,False,error,0.0% of replenishment_orders.sku_uid found in product_dim (6 orphan value(s)),12,12,1.0,"16_1020_GREY_40, 33_213_BLACK_38, 33_3181_WHITE_37, 44_571_GREY_41, 57_38_ROSE-GOLD_34",Below the 99% threshold. Rows that fail to join are dropped from the panel and their risk days vanish.
+referential.replenishment_store_in_store_dim,replenishment_orders,False,error,0.0% of replenishment_orders.store_id found in store_dim (6 orphan value(s)),12,12,1.0,"BHS01, GBS01, GGS01, KCS05, LUS06",Below the 99% threshold. Rows that fail to join are dropped from the panel and their risk days vanish.
+structural.date_artifact,replenishment_orders,False,error,Order_Date: 12 destroyed date cell(s),12,12,1.0,########,Column overflow was baked into the export. The underlying values are gone and must be re-extracted; widen the column or export dates as ISO text.
+temporal.coverage,replenishment_orders,False,error,No usable dates at all,12,12,1.0,,"Every date value is missing, destroyed or unparseable, so this table has no time dimension."
+structural.table_present,sales_pos,False,error,Table absent from the extract (sales_pos.csv),1,1,1.0,,Daily POS units per store x SKU. ABSENT from the real sample. Without it there is no demand signal and no time-to-event for Kaplan-Meier.
+survival.demand_signal,sales_pos,False,error,No POS/sales data,0,0,0.0,,"Without demand the depletion process is unobserved. Stock reaching zero cannot be distinguished from a SKU that was never allocated, so the at-risk set cannot be defined."
+referential.external_signal_brand_overlap,external_signals_fact,False,warn,None of the 7 signal brands are ours,7,7,1.0,"BATA, KHADIMS, METRO, MOCHI, PARAGON","The feed tracks competitor brands. It can only join at brand x city x category x week, never at SKU, so it is a weak optional covariate rather than a modelling input."
+structural.header_hygiene,forecast,False,warn,1 header problem(s),1,18,0.05555555555555555,'prediction_size ',Untrimmed or case-colliding headers break column lookups silently. Normalise at ingestion.
+temporal.forecast_granularity,forecast,False,warn,Forecast is monthly and carries no store dimension,0,11,0.0,,"Two transformations stand between this and the panel: allocation of a national figure to stores (needs an allocation basis that is not in the extract), and disaggregation from month to day. Both add error that must be tracked, not hidden."
+referential.store_id_repaired,inventory_daily,False,warn,1 distinct store id(s) across 3 row(s) only joined after letter-O/digit-0 repair,3,3,1.0,GUS03,"The repair is applied so analysis can proceed, but the source system is emitting a corrupt key and should be fixed."
+structural.header_hygiene,pending_orders,False,warn,1 header problem(s),1,23,0.043478260869565216,'case-duplicate: vendor name',Untrimmed or case-colliding headers break column lookups silently. Normalise at ingestion.
+referential.promotion_city_in_store_dim,promotion_data,False,warn,0.0% of promotion_data.city_norm found in store_dim (12 orphan value(s)),12,12,1.0,"CHENNAI, COIMBATORE, DINDIGUL, ERODE, KANCHIPURAM",Promotion is a city calendar; not every promo city needs a store.
+accounting.store_capacity_present,store_dim,False,warn,2 non-positive value(s),2,3,0.6666666666666666,PAIRS_CAPACITY non-positive on 2 row(s),"PAIRS_CAPACITY is 0 for 2 of 3 stores in the real sample. Rebalancing needs a real capacity constraint, so zero is treated as missing."
+grain.canonical_grain,external_signals_fact,True,error,Unique on canonical grain Brand+City+Footwear_Type+post_datetime,0,13,0.0,,
+grain.duplicate_key,external_signals_fact,True,error,Unique on Brand+City+Footwear_Type+post_datetime,0,13,0.0,,
+structural.non_empty,external_signals_fact,True,error,13 data row(s),0,1,0.0,,
+structural.numeric_castable,external_signals_fact,True,error,All 6 numeric columns cast cleanly,0,78,0.0,,
+structural.required_columns,external_signals_fact,True,error,All 4 required columns present,0,4,0.0,,
+accounting.non_negative_forecast,forecast,True,error,No negative values across 1 column(s),0,11,0.0,,
+grain.canonical_grain,forecast,True,error,Unique on canonical grain option_uid+size+year+month,0,11,0.0,,
+grain.composite_key_parse,forecast,True,error,All 11 options_ values parsed,0,11,0.0,,
+grain.duplicate_key,forecast,True,error,Unique on options_+size+year+month,0,11,0.0,,
+grain.key_completeness,forecast,True,error,sku_uid: every component populated,0,11,0.0,,
+grain.key_completeness,forecast,True,error,option_uid: every component populated,0,11,0.0,,
+structural.non_empty,forecast,True,error,11 data row(s),0,1,0.0,,
+structural.numeric_castable,forecast,True,error,All 5 numeric columns cast cleanly,0,55,0.0,,
+structural.required_columns,forecast,True,error,All 7 required columns present,0,7,0.0,,
+accounting.non_negative_stock,inventory_daily,True,error,No negative values across 4 column(s),0,12,0.0,,
+accounting.stock_components_sum_to_opening,inventory_daily,True,error,warehouse_stock + store_stock + intransit_stock == opening_stk holds on all 3 rows,0,3,0.0,,Holds on all 3 rows of the real sample. If it breaks at scale the columns do not mean what the sample implies.
+grain.canonical_grain,inventory_daily,True,error,Unique on canonical grain store_id+sku_uid+date,0,3,0.0,,
+grain.duplicate_key,inventory_daily,True,error,Unique on storeid+dns_item+color+size+Date,0,3,0.0,,
+grain.key_completeness,inventory_daily,True,error,store_id: every component populated,0,3,0.0,,
+grain.key_completeness,inventory_daily,True,error,sku_uid: every component populated,0,3,0.0,,
+grain.key_completeness,inventory_daily,True,error,option_uid: every component populated,0,3,0.0,,
+referential.inventory_store_in_store_dim,inventory_daily,True,error,100.0% of inventory_daily.store_id found in store_dim (0 orphan value(s)),0,3,0.0,,
+structural.non_empty,inventory_daily,True,error,3 data row(s),0,1,0.0,,
+structural.numeric_castable,inventory_daily,True,error,All 4 numeric columns cast cleanly,0,12,0.0,,
+structural.required_columns,inventory_daily,True,error,All 9 required columns present,0,9,0.0,,
+accounting.delivery_after_purchase,pending_orders,True,error,Delivery Date is never before Purchase Date,0,16,0.0,,
+grain.canonical_grain,pending_orders,True,error,Unique on canonical grain Po_No+dns+Item+cname+size,0,16,0.0,,
+grain.duplicate_key,pending_orders,True,error,Unique on Po_No+dns+Item+cname+size,0,16,0.0,,
+grain.key_completeness,pending_orders,True,error,sku_uid: every component populated,0,16,0.0,,
+grain.key_completeness,pending_orders,True,error,option_uid: every component populated,0,16,0.0,,
+referential.colour_code_bridge,pending_orders,True,error,2 colour code(s) map to exactly one name,0,2,0.0,,"This table carries both color (code) and cname (name), which makes it the only bridge to the colour codes embedded in product_dim.itemnumber."
+structural.date_artifact,pending_orders,True,error,Purchase Date: no spreadsheet artifacts,0,16,0.0,,
+structural.date_artifact,pending_orders,True,error,Delivery Date: no spreadsheet artifacts,0,16,0.0,,
+structural.date_artifact,pending_orders,True,error,PO From Date: no spreadsheet artifacts,0,16,0.0,,
+structural.date_parseable,pending_orders,True,error,Purchase Date: all non-artifact values parse,0,16,0.0,,
+structural.date_parseable,pending_orders,True,error,Delivery Date: all non-artifact values parse,0,16,0.0,,
+structural.date_parseable,pending_orders,True,error,PO From Date: all non-artifact values parse,0,16,0.0,,
+structural.non_empty,pending_orders,True,error,16 data row(s),0,1,0.0,,
+structural.numeric_castable,pending_orders,True,error,All 1 numeric columns cast cleanly,0,16,0.0,,
+structural.required_columns,pending_orders,True,error,All 9 required columns present,0,9,0.0,,
+grain.canonical_grain,product_dim,True,error,Unique on canonical grain sku_uid,0,8,0.0,,
+grain.duplicate_key,product_dim,True,error,Unique on dns+item+cname+size,0,8,0.0,,
+grain.key_completeness,product_dim,True,error,sku_uid: every component populated,0,8,0.0,,
+grain.key_completeness,product_dim,True,error,option_uid: every component populated,0,8,0.0,,
+referential.itemnumber_agrees_with_columns,product_dim,True,error,itemnumber agrees with dns/item/size columns,0,8,0.0,,
+structural.non_empty,product_dim,True,error,8 data row(s),0,1,0.0,,
+structural.numeric_castable,product_dim,True,error,All 0 numeric columns cast cleanly,0,8,0.0,,
+structural.required_columns,product_dim,True,error,All 6 required columns present,0,6,0.0,,
+grain.canonical_grain,promotion_data,True,error,Unique on canonical grain city_norm+date,0,12,0.0,,
+grain.duplicate_key,promotion_data,True,error,Unique on city+date,0,12,0.0,,
+structural.non_empty,promotion_data,True,error,12 data row(s),0,1,0.0,,
+structural.numeric_castable,promotion_data,True,error,All 2 numeric columns cast cleanly,0,24,0.0,,
+structural.required_columns,promotion_data,True,error,All 4 required columns present,0,4,0.0,,
+accounting.non_negative_replen,replenishment_orders,True,error,No negative values across 2 column(s),0,24,0.0,,
+grain.composite_key_parse,replenishment_orders,True,error,All 12 SKU values parsed,0,12,0.0,,
+grain.key_completeness,replenishment_orders,True,error,store_id: every component populated,0,12,0.0,,
+grain.key_completeness,replenishment_orders,True,error,sku_uid: every component populated,0,12,0.0,,
+grain.key_completeness,replenishment_orders,True,error,option_uid: every component populated,0,12,0.0,,
+structural.non_empty,replenishment_orders,True,error,12 data row(s),0,1,0.0,,
+structural.numeric_castable,replenishment_orders,True,error,All 2 numeric columns cast cleanly,0,24,0.0,,
+structural.required_columns,replenishment_orders,True,error,All 7 required columns present,0,7,0.0,,
+grain.canonical_grain,store_dim,True,error,Unique on canonical grain store_id,0,3,0.0,,
+grain.duplicate_key,store_dim,True,error,Unique on storeid,0,3,0.0,,
+grain.key_completeness,store_dim,True,error,store_id: every component populated,0,3,0.0,,
+structural.non_empty,store_dim,True,error,3 data row(s),0,1,0.0,,
+structural.numeric_castable,store_dim,True,error,All 2 numeric columns cast cleanly,0,6,0.0,,
+structural.required_columns,store_dim,True,error,All 6 required columns present,0,6,0.0,,
+grain.canonical_grain,vendor_data,True,error,Unique on canonical grain Material+Vendor,0,6,0.0,,
+grain.duplicate_key,vendor_data,True,error,Unique on Material+Vendor,0,6,0.0,,
+structural.non_empty,vendor_data,True,error,6 data row(s),0,1,0.0,,
+structural.numeric_castable,vendor_data,True,error,All 0 numeric columns cast cleanly,0,6,0.0,,
+structural.required_columns,vendor_data,True,error,All 4 required columns present,0,4,0.0,,
+structural.header_hygiene,external_signals_fact,True,warn,Headers clean,0,24,0.0,,
+referential.brand_variant,forecast,True,warn,"1 distinct brand value(s), no near-duplicates",0,1,0.0,,
+referential.size_scale,forecast,True,warn,Single size scale (EU),0,11,0.0,,
+accounting.warehouse_stock_not_store_scoped,inventory_daily,True,warn,warehouse_stock is constant within dns_item+color+size+Date across 3 group(s),0,3,0.0,,"warehouse_stock repeats on every store row for the same SKU/date. It is DC-level, not store-level: summing it across stores double-counts."
+referential.brand_variant,inventory_daily,True,warn,"1 distinct brand value(s), no near-duplicates",0,1,0.0,,
+referential.size_scale,inventory_daily,True,warn,Single size scale (EU),0,3,0.0,,
+structural.header_hygiene,inventory_daily,True,warn,Headers clean,0,15,0.0,,
+referential.brand_variant,pending_orders,True,warn,"1 distinct brand value(s), no near-duplicates",0,1,0.0,,
+referential.brand_variant,product_dim,True,warn,"1 distinct brand value(s), no near-duplicates",0,1,0.0,,
+referential.itemnumber_parseable,product_dim,True,warn,Every itemnumber matches a known format,0,8,0.0,,Two formats coexist: 35-205-XAN-37-1 and 35-3152-007. Only the long form carries colour and size.
+referential.size_scale,product_dim,True,warn,Single size scale (EU),0,8,0.0,,
+structural.header_hygiene,product_dim,True,warn,Headers clean,0,14,0.0,,
+structural.header_hygiene,promotion_data,True,warn,Headers clean,0,6,0.0,,
+referential.size_scale,replenishment_orders,True,warn,Single size scale (EU),0,12,0.0,,
+referential.store_id_repaired,replenishment_orders,True,warn,No store ids needed repair,0,12,0.0,,
+structural.header_hygiene,replenishment_orders,True,warn,Headers clean,0,9,0.0,,
+structural.header_hygiene,store_dim,True,warn,Headers clean,0,9,0.0,,
+structural.header_hygiene,vendor_data,True,warn,Headers clean,0,6,0.0,,
+structural.table_inventory,(all),True,info,9 of 10 configured tables present,0,10,0.0,"store_dim, product_dim, inventory_daily, replenishment_orders, forecast",
+grain.cardinality,external_signals_fact,True,info,13 rows,0,13,0.0,,
+grain.cardinality,forecast,True,info,11 rows | 7 SKU-sizes | 1 options | 2 dates,0,11,0.0,,
+temporal.coverage,forecast,True,info,"2026-06-01 to 2026-07-01 (31 days, 2 distinct, 0 undated rows)",0,11,0.0,,
+grain.cardinality,inventory_daily,True,info,3 rows | 1 stores | 3 SKU-sizes | 1 options,0,3,0.0,,
+grain.cardinality,pending_orders,True,info,16 rows | 16 SKU-sizes | 4 options | 2 dates,0,16,0.0,,
+temporal.coverage,pending_orders,True,info,"2026-01-10 to 2026-06-29 (171 days, 2 distinct, 0 undated rows)",0,16,0.0,,
+grain.cardinality,product_dim,True,info,8 rows | 8 SKU-sizes | 7 options,0,8,0.0,,
+grain.cardinality,promotion_data,True,info,12 rows,0,12,0.0,,
+grain.cardinality,replenishment_orders,True,info,12 rows | 6 stores | 6 SKU-sizes | 6 options,0,12,0.0,,
+grain.cardinality,store_dim,True,info,3 rows | 3 stores,0,3,0.0,,
+grain.cardinality,vendor_data,True,info,6 rows,0,6,0.0,,

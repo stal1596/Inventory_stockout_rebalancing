@@ -1,0 +1,354 @@
+# Declarative contract for every table in the stockout data model.
+#
+# Column names here are the RAW header strings exactly as they appear in the
+# source extracts, quirks included (trailing spaces, mixed case). Validation
+# runs against raw files so it works on real extracts, not just synthetic ones.
+#
+# roles:  key = part of the natural grain | date | measure | dim | ignore
+# dtypes: string | int | float | date | datetime
+
+meta:
+  # Values that mean "this date cell was destroyed by the Excel export".
+  date_artifacts: ["########", "#######", "######", "#####", "####", "#VALUE!", "#N/A", "#REF!"]
+  # Referential-integrity match rate below which a check fails.
+  ref_match_threshold: 0.99
+  # Minimum events per stratum for a stable Kaplan-Meier curve.
+  min_events_per_stratum: 30
+  # How far back to look for an order that could explain an observed stock rise.
+  receipt_lookback_days: 30
+
+tables:
+
+  store_dim:
+    file: store_dim.csv
+    description: Store master. One row per physical store.
+    grain: [store_id]
+    raw_grain: [storeid]
+    role: dimension
+    columns:
+      storeid:        {dtype: string, role: key,     required: true}
+      site_type:      {dtype: string, role: dim,     required: true}
+      state:          {dtype: string, role: dim,     required: true}
+      city:           {dtype: string, role: dim,     required: true}
+      ZONE:           {dtype: string, role: dim,     required: true}
+      TIER:           {dtype: string, role: dim,     required: true}
+      DISPLAY_AREA:   {dtype: float,  role: measure, required: false}
+      PAIRS_CAPACITY: {dtype: float,  role: measure, required: false}
+      MALL_NAME:      {dtype: string, role: dim,     required: false}
+    invariants:
+      - name: store_capacity_present
+        type: positive
+        columns: [PAIRS_CAPACITY]
+        severity: warn
+        note: >-
+          PAIRS_CAPACITY is 0 for 2 of 3 stores in the real sample. Rebalancing
+          needs a real capacity constraint, so zero is treated as missing.
+
+  product_dim:
+    file: product_dim.csv
+    description: SKU master at size level. The authority for sku_uid resolution.
+    grain: [sku_uid]
+    raw_grain: [dns, item, cname, size]
+    role: dimension
+    columns:
+      itemnumber:  {dtype: string, role: dim,  required: true}
+      dns:         {dtype: string, role: key,  required: true}
+      comp:        {dtype: string, role: dim,  required: true}
+      gender:      {dtype: string, role: dim,  required: false}
+      product:     {dtype: string, role: dim,  required: false}
+      item:        {dtype: string, role: key,  required: true}
+      size:        {dtype: string, role: key,  required: true}
+      cname:       {dtype: string, role: key,  required: true}
+      assortment:  {dtype: string, role: dim,  required: false}
+      item_status: {dtype: string, role: dim,  required: false}
+      CATEGORY:    {dtype: string, role: dim,  required: false}
+      SUBCAT:      {dtype: string, role: dim,  required: false}
+      Options_size: {dtype: string, role: dim,  required: false}
+      cno:         {dtype: string, role: dim,  required: false}
+
+  inventory_daily:
+    file: inventory_snapshot.csv
+    description: >-
+      Daily stock position per store x SKU. THE canonical panel fact. The real
+      sample contains a single snapshot; a usable extract must span many dates.
+    grain: [store_id, sku_uid, date]
+    raw_grain: [storeid, dns_item, color, size, Date]
+    role: fact
+    date_columns: [Date]
+    columns:
+      dns_item:        {dtype: string, role: key,     required: true}
+      color:           {dtype: string, role: key,     required: true}
+      size:            {dtype: string, role: key,     required: true}
+      brands:          {dtype: string, role: dim,     required: false}
+      warehouse_stock: {dtype: float,  role: measure, required: true}
+      store_stock:     {dtype: float,  role: measure, required: true}
+      intransit_stock: {dtype: float,  role: measure, required: true}
+      opening_stk:     {dtype: float,  role: measure, required: true}
+      assortment:      {dtype: string, role: dim,     required: false}
+      gender:          {dtype: string, role: dim,     required: false}
+      item_status:     {dtype: string, role: dim,     required: false}
+      category:        {dtype: string, role: dim,     required: false}
+      subcat:          {dtype: string, role: dim,     required: false}
+      Date:            {dtype: date,   role: date,    required: true}
+      storeid:         {dtype: string, role: key,     required: true}
+    invariants:
+      - name: stock_components_sum_to_opening
+        type: sum_equals
+        parts: [warehouse_stock, store_stock, intransit_stock]
+        total: opening_stk
+        severity: error
+        note: >-
+          Holds on all 3 rows of the real sample. If it breaks at scale the
+          columns do not mean what the sample implies.
+      - name: non_negative_stock
+        type: non_negative
+        columns: [warehouse_stock, store_stock, intransit_stock, opening_stk]
+        severity: error
+      - name: warehouse_stock_not_store_scoped
+        type: constant_within_group
+        group: [dns_item, color, size, Date]
+        column: warehouse_stock
+        severity: warn
+        note: >-
+          warehouse_stock repeats on every store row for the same SKU/date.
+          It is DC-level, not store-level: summing it across stores double-counts.
+
+  sales_pos:
+    file: sales_pos.csv
+    description: >-
+      Daily POS units per store x SKU. ABSENT from the real sample. Without it
+      there is no demand signal and no time-to-event for Kaplan-Meier.
+    grain: [store_id, sku_uid, date]
+    raw_grain: [storeid, dns_item, color, size, Date]
+    role: fact
+    date_columns: [Date]
+    required_for_survival: true
+    columns:
+      storeid:     {dtype: string, role: key,     required: true}
+      dns_item:    {dtype: string, role: key,     required: true}
+      color:       {dtype: string, role: key,     required: true}
+      size:        {dtype: string, role: key,     required: true}
+      Date:        {dtype: date,   role: date,    required: true}
+      units_sold:  {dtype: float,  role: measure, required: true}
+      gross_sales: {dtype: float,  role: measure, required: false}
+    invariants:
+      - name: non_negative_units
+        type: non_negative
+        columns: [units_sold]
+        severity: error
+
+  replenishment_orders:
+    file: replenishment_orders.csv
+    description: DC -> store replenishment lines.
+    grain: [store_id, sku_uid, date]
+    raw_grain: [Store_ID, SKU, Size, Order_Date]
+    role: fact
+    date_columns: [Order_Date]
+    columns:
+      Order_Date:          {dtype: date,   role: date,    required: true}
+      Warehouse_ID:        {dtype: string, role: dim,     required: true}
+      Store_ID:            {dtype: string, role: key,     required: true}
+      SKU:                 {dtype: string, role: key,     required: true}
+      Category:            {dtype: string, role: dim,     required: false}
+      Subcategory:         {dtype: string, role: dim,     required: false}
+      Size:                {dtype: string, role: key,     required: true}
+      Current_Stock:       {dtype: float,  role: measure, required: true}
+      Replenishment qty:   {dtype: float,  role: measure, required: true}
+    invariants:
+      - name: warehouse_id_is_identifying
+        type: not_constant
+        columns: [Warehouse_ID]
+        severity: error
+        note: >-
+          Literal constant "Warehouse" on all 12 real sample rows. Without a real
+          warehouse identity there are no DC->store lanes and no rebalancing.
+      - name: non_negative_replen
+        type: non_negative
+        columns: [Current_Stock, "Replenishment qty"]
+        severity: error
+
+  forecast:
+    file: forecast.csv
+    description: >-
+      Demand forecast at option x size x MONTH, national. No store dimension:
+      needs store allocation and day-level disaggregation before joining.
+    grain: [option_uid, size, year, month]
+    raw_grain: [options_, size, year, month]
+    role: fact
+    date_columns: [Date]
+    columns:
+      options_:         {dtype: string, role: key,     required: true}
+      size:             {dtype: string, role: key,     required: true}
+      year:             {dtype: int,    role: key,     required: true}
+      month:            {dtype: int,    role: key,     required: true}
+      dns_item:         {dtype: string, role: dim,     required: true}
+      color:            {dtype: string, role: dim,     required: true}
+      brands:           {dtype: string, role: dim,     required: false}
+      gender:           {dtype: string, role: dim,     required: false}
+      dns:              {dtype: string, role: dim,     required: false}
+      category:         {dtype: string, role: dim,     required: false}
+      flag:             {dtype: string, role: dim,     required: false}
+      assortment:       {dtype: string, role: dim,     required: false}
+      subcat:           {dtype: string, role: dim,     required: false}
+      avg_price:        {dtype: float,  role: measure, required: false}
+      product:          {dtype: string, role: dim,     required: false}
+      lead_time:        {dtype: float,  role: measure, required: false}
+      prediction_size: {dtype: float, role: measure, required: true}
+      Date:             {dtype: date,   role: date,    required: false}
+    invariants:
+      - name: non_negative_forecast
+        type: non_negative
+        columns: [prediction_size]
+        severity: error
+
+  pending_orders:
+    file: pending_orders.csv
+    description: >-
+      Open purchase orders, vendor -> company. NO store dimension, so inbound
+      supply cannot be attributed to a store. Network-level covariate only.
+    grain: [Po_No, dns, Item, cname, size]
+    raw_grain: [Po_No, dns, Item, cname, size]
+    role: fact
+    date_columns: ["Purchase Date", "Delivery Date", "PO From Date"]
+    columns:
+      Po_No:            {dtype: string,   role: key,     required: true}
+      dns:              {dtype: string,   role: key,     required: true}
+      Item:             {dtype: string,   role: key,     required: true}
+      color:            {dtype: string,   role: dim,     required: true}
+      cname:            {dtype: string,   role: key,     required: true}
+      size:             {dtype: string,   role: key,     required: true}
+      quantity:         {dtype: float,    role: measure, required: true}
+      pcode:            {dtype: string,   role: dim,     required: false}
+      "Purchase Type":  {dtype: string,   role: dim,     required: false}
+      "Purchase Date":  {dtype: datetime, role: date,    required: true}
+      "Delivery Date":  {dtype: datetime, role: date,    required: true}
+      Vendor:           {dtype: string,   role: dim,     required: false}
+      "Vendor Name":    {dtype: string,   role: dim,     required: false}
+      "Purchase Group": {dtype: string,   role: dim,     required: false}
+      locationskuname:  {dtype: string,   role: dim,     required: false}
+      OPTIONS:          {dtype: string,   role: dim,     required: false}
+      PRODUCT:          {dtype: string,   role: dim,     required: false}
+      "PO From Date":   {dtype: datetime, role: date,    required: false}
+      AsOnDate:         {dtype: string,   role: dim,     required: false}
+      Company:          {dtype: string,   role: dim,     required: false}
+      "Purchase Group description": {dtype: string, role: dim, required: false}
+      "Vendor name":    {dtype: string,   role: ignore,  required: false}
+    invariants:
+      - name: po_no_is_identifying
+        type: not_constant
+        columns: [Po_No]
+        severity: error
+        note: Constant 4500000000 on all 16 real sample rows - not a usable key.
+      - name: delivery_after_purchase
+        type: date_order
+        earlier: "Purchase Date"
+        later: "Delivery Date"
+        severity: error
+
+  promotion_data:
+    file: promotion_data.csv
+    description: >-
+      Promotion/holiday calendar at CITY x day. No store and no SKU dimension;
+      joins to stores only via a case-folded city name.
+    grain: [city_norm, date]
+    raw_grain: [city, date]
+    role: fact
+    date_columns: [date]
+    columns:
+      date:           {dtype: date,   role: date,    required: true}
+      city:           {dtype: string, role: key,     required: true}
+      states:         {dtype: string, role: dim,     required: false}
+      zone:           {dtype: string, role: dim,     required: false}
+      promotion_flag: {dtype: int,    role: measure, required: true}
+      holiday_flag:   {dtype: int,    role: measure, required: true}
+
+  vendor_data:
+    file: vendor_data.csv
+    description: >-
+      Vendor master keyed by material. Mat_No is 7-digit while item is 3-4 digit,
+      so the Mat_No <-> item link is UNVERIFIED.
+    grain: [Material, Vendor]
+    raw_grain: [Material, Vendor]
+    role: dimension
+    columns:
+      Material: {dtype: string, role: key, required: true}
+      Dns:      {dtype: string, role: dim, required: true}
+      Mat_No:   {dtype: string, role: dim, required: true}
+      Vendor:   {dtype: string, role: key, required: true}
+      Name1:    {dtype: string, role: dim, required: false}
+      Search_2: {dtype: string, role: dim, required: false}
+
+  external_signals_fact:
+    file: external_signals_fact.csv
+    description: >-
+      Social listening. Covers COMPETITOR brands, not own SKUs. Joinable only at
+      brand x city x category x week. Weak, optional covariate.
+    grain: [Brand, City, Footwear_Type, post_datetime]
+    raw_grain: [Brand, City, Footwear_Type, post_datetime]
+    role: fact
+    date_columns: [post_datetime]
+    columns:
+      Brand:               {dtype: string, role: key,     required: true}
+      Country:             {dtype: string, role: dim,     required: false}
+      State:               {dtype: string, role: dim,     required: false}
+      City:                {dtype: string, role: key,     required: true}
+      Handle:              {dtype: string, role: dim,     required: false}
+      Footwear_Type:       {dtype: string, role: key,     required: true}
+      Shoe_Type:           {dtype: string, role: dim,     required: false}
+      Category:            {dtype: string, role: dim,     required: false}
+      Sub_Category:        {dtype: string, role: dim,     required: false}
+      Seasonality:         {dtype: string, role: dim,     required: false}
+      Campaign_Name:       {dtype: string, role: dim,     required: false}
+      Post_Content:        {dtype: string, role: ignore,  required: false}
+      Sentiment:           {dtype: string, role: dim,     required: false}
+      Trend_Signal:        {dtype: string, role: dim,     required: false}
+      Customer_Intent:     {dtype: string, role: dim,     required: false}
+      Mention_Count:       {dtype: float,  role: measure, required: false}
+      Share_of_Voice_Pct:  {dtype: float,  role: measure, required: false}
+      Influencer_Mention:  {dtype: string, role: dim,     required: false}
+      Competitor_Mention:  {dtype: string, role: dim,     required: false}
+      page_follower_count: {dtype: float,  role: measure, required: false}
+      post_like_count:     {dtype: float,  role: measure, required: false}
+      post_comment_count:  {dtype: float,  role: measure, required: false}
+      engagement_rate_pct: {dtype: float,  role: measure, required: false}
+      post_datetime:       {dtype: date,   role: date,    required: true}
+
+# Cross-table referential integrity. Checked as match rate against threshold.
+referential:
+  - name: inventory_store_in_store_dim
+    child: {table: inventory_daily, key: store_id}
+    parent: {table: store_dim, key: store_id}
+    severity: error
+  - name: replenishment_store_in_store_dim
+    child: {table: replenishment_orders, key: store_id}
+    parent: {table: store_dim, key: store_id}
+    severity: error
+  - name: sales_store_in_store_dim
+    child: {table: sales_pos, key: store_id}
+    parent: {table: store_dim, key: store_id}
+    severity: error
+  - name: inventory_sku_in_product_dim
+    child: {table: inventory_daily, key: sku_uid}
+    parent: {table: product_dim, key: sku_uid}
+    severity: error
+  - name: replenishment_sku_in_product_dim
+    child: {table: replenishment_orders, key: sku_uid}
+    parent: {table: product_dim, key: sku_uid}
+    severity: error
+  - name: sales_sku_in_product_dim
+    child: {table: sales_pos, key: sku_uid}
+    parent: {table: product_dim, key: sku_uid}
+    severity: error
+  - name: forecast_option_in_product_dim
+    child: {table: forecast, key: option_uid}
+    parent: {table: product_dim, key: option_uid}
+    severity: error
+  - name: promotion_city_in_store_dim
+    child: {table: promotion_data, key: city_norm}
+    parent: {table: store_dim, key: city_norm}
+    severity: warn
+    note: Promotion is a city calendar; not every promo city needs a store.
+
+# Tables that must share a common date window for survival analysis.
+survival_window:
+  required_tables: [inventory_daily, sales_pos, replenishment_orders]
