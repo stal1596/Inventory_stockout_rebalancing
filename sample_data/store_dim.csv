@@ -1,0 +1,4 @@
+storeid,site_type,state,city,ZONE,TIER,DISPLAY_AREA,PAIRS_CAPACITY,MALL_NAME
+GUS03,Store,Assam,Guwahati,East Zone,Tier 2,928,0,NCS SQUARE MALL
+BPC01,Store,Madhya Pradesh,Bhopal,West Zone,Tier 1,510,630,DB CITY MALL
+HPS01,Store,Haryana,Sonipat,North Zone,Tier 3,1262,0,MODEL TOWN
