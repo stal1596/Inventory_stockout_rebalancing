@@ -30,7 +30,7 @@ def tiny_extract(tmp_path_factory, synth_config) -> Path:
 
     dims = build_dimensions(rng, profile, defaults)
     result = simulate(rng, dims, defaults)
-    emit_all(dims, result, rng, out)
+    emit_all(dims, result, rng, out, defaults)
     return out
 
 
@@ -59,7 +59,7 @@ def model_extract(tmp_path_factory, synth_config) -> Path:
 
     dims = build_world(profile, defaults)
     baseline = run_arm(dims, defaults, "A-baseline")
-    emit_all(dims, baseline.result, np.random.default_rng(defaults["seed"]), out)
+    emit_all(dims, baseline.result, np.random.default_rng(defaults["seed"]), out, defaults)
 
     counterfactual = run_arm(
         dims, defaults, "B-counterfactual", replenishment_enabled=False

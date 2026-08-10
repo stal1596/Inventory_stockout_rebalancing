@@ -54,6 +54,63 @@ def _sum_equals(name: str, frame: pd.DataFrame, rule: dict) -> Finding:
     )
 
 
+def _ratio_equals(name: str, frame: pd.DataFrame, rule: dict) -> Finding:
+    """A reported rate must equal the columns it claims to be computed from.
+
+    Social and engagement extracts routinely ship a rate alongside its own
+    numerator and denominator with no arithmetic relationship between them. That
+    is invisible to a range check -- every value looks plausible -- so it needs
+    the identity stated explicitly.
+    """
+    numerator, denominator = rule["numerator"], rule["denominator"]
+    result = rule["result"]
+    needed = numerator + [denominator, result]
+    missing = [column for column in needed if column not in frame.columns]
+    if missing:
+        # Not a failure: these columns are declared optional, so an export that
+        # predates them is not broken. It is worth reporting that the rate cannot
+        # be verified at all, which is a different thing from it being correct.
+        return Finding(
+            check=f"accounting.{rule['name']}",
+            table=name,
+            passed=True,
+            severity=INFO,
+            summary=(
+                f"{result} cannot be verified: this extract has no "
+                f"{', '.join(missing)}"
+            ),
+            detail=rule.get("note", "").strip(),
+        )
+
+    top = sum(_numeric(frame, column) for column in numerator)
+    bottom = _numeric(frame, denominator)
+    expected = top / bottom.where(bottom > 0) * float(rule.get("scale", 1))
+    reported = _numeric(frame, result)
+    diff = (expected - reported).abs()
+    # Rows where the denominator is zero or either side is missing cannot be
+    # judged, so they are excluded rather than counted as failures.
+    bad = diff.gt(float(rule.get("tolerance", 0.01))).fillna(False)
+    comparable = int(diff.notna().sum())
+    return Finding(
+        check=f"accounting.{rule['name']}",
+        table=name,
+        passed=not bad.any(),
+        severity=rule.get("severity", WARN),
+        summary=(
+            f"{result} matches {'+'.join(numerator)} / {denominator} "
+            f"on all {comparable:,} comparable row(s)"
+            if not bad.any()
+            else f"{int(bad.sum()):,} of {comparable:,} row(s) report a {result} "
+            f"that {'+'.join(numerator)} / {denominator} does not produce"
+        ),
+        n_bad=int(bad.sum()),
+        n_total=comparable,
+        examples=[f"reported={r:g} computed={e:g}"
+                  for r, e in zip(reported[bad].head(3), expected[bad].head(3))],
+        detail=rule.get("note", "").strip(),
+    )
+
+
 def _non_negative(name: str, frame: pd.DataFrame, rule: dict) -> Finding:
     columns = [c for c in rule["columns"] if c in frame.columns]
     bad_total, examples = 0, []
@@ -188,6 +245,7 @@ def _date_order(name: str, frame: pd.DataFrame, rule: dict) -> Finding:
 
 _HANDLERS = {
     "sum_equals": _sum_equals,
+    "ratio_equals": _ratio_equals,
     "non_negative": _non_negative,
     "positive": _positive,
     "not_constant": _not_constant,

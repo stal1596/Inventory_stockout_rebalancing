@@ -38,6 +38,24 @@ defaults:
   store_open_late_rate: 0.04         # stores that enter after the window start
   initial_stock_days_cover: [8, 40]  # seeds left-truncated spells
 
+  # Social listening feed. Buzz is a noisy, forward-shifted view of the SAME
+  # latent demand the simulator draws, so a social feature can actually be
+  # tested rather than being noise by construction. See synth/social.py.
+  social:
+    buzz_lead_weeks: 1               # buzz LEADS demand; 0 would make it useless
+    buzz_noise_sigma: 0.9            # blur; targets a buzz/next-week-demand rho ~0.35
+    buzz_smoothing_weeks: 2          # listening tools report a rolling window, not a spike
+    # Week-over-week move that earns an Up/Down label. Tuned, not guessed: at
+    # 0.65 about half the weeks read Stable (a realistic mix) AND the label
+    # separates next-week demand better than a tighter threshold does, because
+    # small moves are mostly noise.
+    trend_threshold: 0.65
+    base_mentions: 220               # mention volume at buzz_index == 1
+    posts_per_group_mean: 1.6        # extra posts per brand x city x line x week
+    max_posts: 25000                 # cap; extras are trimmed, the 1-per-group floor is not
+    complaint_sensitivity: 2.5       # how hard OUR stockouts push the Complaint intent
+    follower_growth_weekly: 0.004    # accounts grow slowly; counts never jump
+
 profiles:
 
   # Small enough to generate inside a unit test, but large enough to clear the

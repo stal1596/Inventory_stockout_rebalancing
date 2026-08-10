@@ -281,12 +281,27 @@ tables:
   external_signals_fact:
     file: external_signals_fact.csv
     description: >-
-      Social listening. Covers COMPETITOR brands, not own SKUs. Joinable only at
-      brand x city x category x week. Weak, optional covariate.
+      Social listening, one row per post. Category-grain only: it carries no SKU
+      and no size, so it joins at city x category x subcategory x week and never
+      below. The supplied extract has no post identifier, which is why the grain
+      below leans on the timestamp; post_id is what a real export provides.
     grain: [Brand, City, Footwear_Type, post_datetime]
     raw_grain: [Brand, City, Footwear_Type, post_datetime]
     role: fact
     date_columns: [post_datetime]
+    invariants:
+      - name: engagement_rate_consistent
+        type: ratio_equals
+        numerator: [post_like_count, post_comment_count, post_share_count]
+        denominator: reach
+        scale: 100
+        result: engagement_rate_pct
+        tolerance: 0.05
+        severity: warn
+        note: >-
+          engagement_rate_pct must be the engagement it reports divided by the
+          reach beside it. In the supplied sample it is unrelated to either,
+          which makes every engagement-weighted feature unverifiable.
     columns:
       Brand:               {dtype: string, role: key,     required: true}
       Country:             {dtype: string, role: dim,     required: false}
@@ -312,6 +327,22 @@ tables:
       post_comment_count:  {dtype: float,  role: measure, required: false}
       engagement_rate_pct: {dtype: float,  role: measure, required: false}
       post_datetime:       {dtype: date,   role: date,    required: true}
+      # Fields a real platform export carries. Optional because the supplied
+      # sample predates them; the synthetic extract emits all of them.
+      post_id:             {dtype: string, role: key,     required: false}
+      platform:            {dtype: string, role: dim,     required: false}
+      post_type:           {dtype: string, role: dim,     required: false}
+      author_type:         {dtype: string, role: dim,     required: false}
+      is_verified:         {dtype: string, role: dim,     required: false}
+      language:            {dtype: string, role: dim,     required: false}
+      hashtags:            {dtype: string, role: ignore,  required: false}
+      reach:               {dtype: float,  role: measure, required: false}
+      impressions:         {dtype: float,  role: measure, required: false}
+      post_share_count:    {dtype: float,  role: measure, required: false}
+      post_save_count:     {dtype: float,  role: measure, required: false}
+      is_repost:           {dtype: string, role: dim,     required: false}
+      parent_post_id:      {dtype: string, role: dim,     required: false}
+      brand_is_own:        {dtype: string, role: dim,     required: false}
 
 # Cross-table referential integrity. Checked as match rate against threshold.
 referential:

@@ -13,18 +13,9 @@ import pandas as pd
 
 from stockout.synth.dims import BRANDS, COLOURS, VENDORS
 from stockout.synth.simulate import SimulationResult
+from stockout.synth.social import emit_external_signals
 
 ISO = "%Y-%m-%d"
-
-# Competitor brands, as in the real feed. Deliberately NOT our own brands: the
-# point that external signals cannot join at SKU level is a real finding, not an
-# artifact to be smoothed away.
-COMPETITOR_BRANDS = ["Bata", "Relaxo", "Paragon", "Mochi", "Red Chief", "Khadims"]
-SENTIMENTS = ["Positive", "Neutral", "Negative"]
-TREND_SIGNALS = ["Trending Up", "Trending Down", "Stable"]
-INTENTS = ["Product Inquiry", "Purchase Intent", "Comparison", "Complaint", "Recommendation"]
-SEASONALITY_TAGS = ["Back-to-School", "Monsoon", "Festive", "Winter", "Marathon Season"]
-CAMPAIGNS = ["Back To School", "Monsoon Ready", "Festive Collection", "Street Style", "Comfort First"]
 
 
 def _branded_sku(brand: str, dns_item: str, colour: str) -> str:
@@ -287,65 +278,6 @@ def emit_vendors(dims, out: Path) -> None:
     dims.vendors.to_csv(out / "vendor_data.csv", index=False)
 
 
-def emit_external_signals(dims, rng, out: Path, n_posts: int = 400) -> None:
-    """Social listening rows, unique on brand x city x footwear type x date.
-
-    Drawn without replacement from the full grid rather than sampled
-    independently, so the table genuinely holds its declared grain.
-    """
-    cities = dims.stores[["city", "state"]].drop_duplicates().reset_index(drop=True)
-    lines = dims.skus[["category", "subcat"]].drop_duplicates().reset_index(drop=True)
-    dates = dims.calendar["date"]
-
-    grid = np.array(
-        np.meshgrid(
-            np.arange(len(COMPETITOR_BRANDS)),
-            np.arange(len(cities)),
-            np.arange(len(lines)),
-            np.arange(len(dates)),
-            indexing="ij",
-        )
-    ).reshape(4, -1).T
-    chosen = grid[rng.choice(len(grid), size=min(n_posts, len(grid)), replace=False)]
-
-    rows = []
-    for brand_index, city_index, line_index, date_index in chosen:
-        city_row = cities.iloc[int(city_index)]
-        category = lines.iloc[int(line_index)]["category"]
-        subcat = lines.iloc[int(line_index)]["subcat"]
-        brand = COMPETITOR_BRANDS[int(brand_index)]
-        posted = dates.iloc[int(date_index)]
-        rows.append(
-            {
-                "Brand": brand,
-                "Country": "India",
-                "State": city_row["state"],
-                "City": city_row["city"],
-                "Handle": "@" + brand.lower().replace(" ", ""),
-                "Footwear_Type": f"{category} - {subcat}",
-                "Shoe_Type": subcat.title(),
-                "Category": category,
-                "Sub_Category": subcat,
-                "Seasonality": SEASONALITY_TAGS[int(rng.integers(0, len(SEASONALITY_TAGS)))],
-                "Campaign_Name": CAMPAIGNS[int(rng.integers(0, len(CAMPAIGNS)))],
-                "Post_Content": f"Discussions increasing around {category.lower()} products",
-                "Sentiment": SENTIMENTS[int(rng.integers(0, len(SENTIMENTS)))],
-                "Trend_Signal": TREND_SIGNALS[int(rng.integers(0, len(TREND_SIGNALS)))],
-                "Customer_Intent": INTENTS[int(rng.integers(0, len(INTENTS)))],
-                "Mention_Count": int(rng.integers(50, 500)),
-                "Share_of_Voice_Pct": round(float(rng.uniform(0.1, 32)), 2),
-                "Influencer_Mention": "Yes" if rng.random() < 0.4 else "No",
-                "Competitor_Mention": "Yes" if rng.random() < 0.5 else "No",
-                "page_follower_count": int(rng.integers(500_000, 10_000_000)),
-                "post_like_count": int(rng.integers(3_000, 75_000)),
-                "post_comment_count": int(rng.integers(1_000, 4_000)),
-                "engagement_rate_pct": round(float(rng.uniform(0.5, 8.0)), 2),
-                "post_datetime": posted.strftime(ISO),
-            }
-        )
-    pd.DataFrame(rows).to_csv(out / "external_signals_fact.csv", index=False)
-
-
 def emit_ground_truth(result: SimulationResult, out: Path) -> None:
     """The answer key: true spells, plus the lifecycle inputs behind censoring."""
     truth = out / "ground_truth"
@@ -372,7 +304,11 @@ def emit_counterfactual(result: SimulationResult, out: Path) -> None:
     ].to_parquet(truth / "counterfactual_panel.parquet", index=False)
 
 
-def emit_all(dims, result: SimulationResult, rng, out: Path) -> None:
+def emit_all(
+    dims, result: SimulationResult, rng, out: Path, defaults: dict | None = None
+) -> None:
+    """Write the full extract. ``defaults`` carries the social generation block;
+    omitting it falls back to ``social.SOCIAL_DEFAULTS``."""
     out.mkdir(parents=True, exist_ok=True)
     emit_store_dim(dims, out)
     emit_product_dim(dims, result, out)
@@ -383,5 +319,5 @@ def emit_all(dims, result: SimulationResult, rng, out: Path) -> None:
     emit_pending_orders(dims, rng, out)
     emit_promotions(dims, out)
     emit_vendors(dims, out)
-    emit_external_signals(dims, rng, out)
+    emit_external_signals(dims, result, rng, out, defaults)
     emit_ground_truth(result, out)

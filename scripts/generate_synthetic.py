@@ -91,7 +91,7 @@ def main() -> int:
             f"end reasons {result.spells['end_reason'].value_counts().to_dict()}"
         )
 
-    emit_all(dims, result, rng, out)
+    emit_all(dims, result, rng, out, defaults)
     print(f"  written to {out}")
 
     if args.counterfactual:

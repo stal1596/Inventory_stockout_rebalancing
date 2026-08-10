@@ -21,7 +21,7 @@ Both verdicts are load-bearing. Do not quietly walk either of them back.
 ```bash
 uv sync --extra dev --extra survival     # survival extra is required for stage 2
 
-uv run pytest                            # 167 tests, ~65s
+uv run pytest                            # 182 tests, ~70s
 uv run pytest tests/test_spells.py -q -p no:warnings
 uv run pytest tests/test_estimators.py::test_naive_km_overstates_survival -q
 ```
@@ -102,12 +102,30 @@ be computable at spell start. Trailing demand sums days *strictly before*
 applies only when the result resolves against `store_dim`; ambiguous repairs are
 refused and every repair is reported. Never invent a valid-looking key.
 
+**6. Social buzz is built from LATENT demand and stays category-grain
+(`synth/social.py`).** Three ways this fails quietly:
+
+- *Wrong demand column.* Buzz reads `units_sold + lost_units`, never `units_sold`
+  alone. Realised sales differ between policy arms because stockouts censor them;
+  latent demand does not. Using sales would leak the replenishment policy into
+  the social table and every arm comparison would start measuring it.
+- *Losing the lead.* Buzz must correlate with **next** week's demand more
+  strongly than with the current week. Smoothing the finished buzz series instead
+  of its noise averages in the adjacent week and silently destroys this while
+  every other check still passes.
+- *Joining too deep.* The table carries no `sku_uid` and no size. It joins at
+  city × category × subcategory × week and never below. That limit is a real
+  property of social data, not an artifact to be smoothed away.
+
+`tests/test_social.py` asserts all three.
+
 ## Configuration contracts
 
 **`config/schemas.yaml`** drives validation. Column names are the raw header
-strings, quirks included. Adding an invariant (`sum_equals`, `non_negative`,
-`not_constant`, `constant_within_group`, `date_order`, `positive`) is a config
-change, not code.
+strings, quirks included. Adding an invariant (`sum_equals`, `ratio_equals`,
+`non_negative`, `not_constant`, `constant_within_group`, `date_order`,
+`positive`) is a config change, not code — but a *new* invariant type needs a
+handler in `accounting._HANDLERS`, or `_declared_invariants` skips it silently.
 
 **`config/synth_profiles.yaml`** holds generation profiles and — importantly — the
 `defects:` map, which pairs each injectable defect with the check that must catch
@@ -143,16 +161,20 @@ events in the holdout, making ranking metrics undefined), `dev` (real runs),
 
 | Command | Expected |
 |---|---|
-| `pytest` | 167 passing |
-| validations on `sample_data/` | 132 checks, **23 blocking** |
-| validations on clean synthetic | 169 checks, **0 blocking**, 3 warnings |
+| `pytest` | 182 passing |
+| validations on `sample_data/` | 133 checks, **23 blocking** |
+| validations on clean synthetic | 170 checks, **0 blocking**, 2 warnings |
 | validations on `--inject-defects` synthetic | 21 blocking; each defect trips its mapped check |
 | `fit_model.py` | KM bias +17d optimistic; AFT test C-index ~0.70 |
 
-The 3 warnings on clean synthetic are **expected and correct** — informative
-censoring is inherent to replenishment policy, the social feed genuinely tracks
-competitor brands, and the forecast genuinely is monthly and national. Do not
-"fix" them.
+The 2 warnings on clean synthetic are **expected and correct** — informative
+censoring is inherent to replenishment policy, and the forecast genuinely is
+monthly and national. Do not "fix" them.
+
+There used to be a third, "the social feed tracks competitor brands". It now
+passes because `synth/social.py` emits own-brand rows alongside competitors, so
+own-vs-competitor share of voice is computable. That the feed cannot be joined
+**below category grain** is still true and still enforced — see invariant 6.
 
 ## Traps found the hard way
 

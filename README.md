@@ -59,8 +59,9 @@ uv run pytest
 | `config/synth_profiles.yaml` | Generation profiles and the defect → check map |
 | `src/stockout/keys.py` | Identifier normalisation and composite-key parsing |
 | `src/stockout/spells.py` | Panel → survival spell table |
-| `src/stockout/validate/` | Six check groups (132 checks on `sample_data/`, 169 on a complete extract) |
+| `src/stockout/validate/` | Six check groups (133 checks on `sample_data/`, 170 on a complete extract) |
 | `src/stockout/synth/` | Simulation with recorded ground truth, policy arms, defect injection |
+| `src/stockout/synth/social.py` | Social feed driven by the simulation's own latent demand, so a social feature can actually be tested |
 | `src/stockout/model/` | Covariates, estimators, evaluation, scoring, reorder policy, plots |
 | `reports/model/` | Figures and metric CSVs |
 | `sample_data/` | The supplied extract (9 CSVs, 93 rows) |
@@ -84,16 +85,16 @@ uv run pytest
 
 | Input | Expectation |
 |---|---|
-| `sample_data/` | 132 checks, **23 blocking errors** — reproduces the assessment's findings |
-| clean synthetic | 169 checks, **0 blocking errors**; 3 warnings that are genuine domain properties, not defects |
+| `sample_data/` | 133 checks, **23 blocking errors** — reproduces the assessment's findings |
+| clean synthetic | 170 checks, **0 blocking errors**; 2 warnings that are genuine domain properties, not defects |
 | dirty synthetic | **21 blocking errors** — each injected defect trips its mapped check |
 | `fit_model.py` | KM bias +17d optimistic; AFT test C-index ~0.70 |
 | `diagnose_network.py` | single DC pool; transfers hide 6.9% of stockouts |
-| `pytest` | 167 passing |
+| `pytest` | 182 passing |
 
-The three warnings on clean synthetic are expected: informative censoring is
-inherent to replenishment policy, the social feed genuinely tracks competitors,
-and the forecast is genuinely monthly and national.
+The two warnings on clean synthetic are expected: informative censoring is
+inherent to replenishment policy, and the forecast is genuinely monthly and
+national.
 
 ## What Stage 2 concluded
 
