@@ -162,8 +162,90 @@ def zero_store_capacity(out: Path, rng) -> None:
     _write(frame, path)
 
 
+def untracked_transfers(out: Path, rng, share: float = 0.4, moves_per_sku: int = 3) -> None:
+    """Move stock between stores without recording the movement.
+
+    The business confirmed inter-store transfers happen and are not captured, so
+    this is not a hypothetical. In the panel a transfer looks like two lies:
+
+      * the SENDING store loses stock with no sale to explain it, which reads as
+        accelerated depletion and can fabricate an early stockout event;
+      * the RECEIVING store gains stock with no order, which reads as a
+        replenishment and starts a spurious new spell.
+
+    Both corrupt exactly the quantity the survival model is built on. The
+    accounting identity is recomputed afterwards so this defect stays surgical:
+    it trips ``accounting.stock_movement_sign`` on its own merits rather than
+    also breaking ``stock_components_sum_to_opening`` and muddying the test.
+
+    Stock is a running balance, so a transfer on day d persists from d onward.
+    """
+    path = out / "inventory_snapshot.csv"
+    if not path.exists():
+        return
+    frame = _read(path)
+    if frame.empty:
+        return
+
+    for column in ("store_stock", "warehouse_stock", "intransit_stock"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce").fillna(0)
+    frame["_date"] = pd.to_datetime(frame["Date"], errors="coerce")
+    sku = frame["dns_item"] + "|" + frame["color"] + "|" + frame["size"]
+    frame["_sku"] = sku
+
+    # Only SKUs carried by at least two stores can be transferred between them.
+    carried = frame.groupby("_sku")["storeid"].nunique()
+    shared = carried[carried >= 2].index.to_numpy()
+    if len(shared) == 0:
+        return
+
+    dates = frame["_date"].dropna().unique()
+    if len(dates) < 3:
+        return
+
+    # Every shared SKU moves a few times over the window: transfers are routine
+    # operational traffic, not a handful of exceptions.
+    plan = [(key, move) for key in shared for move in range(moves_per_sku)]
+    for key, _ in plan:
+        block = frame[frame["_sku"] == key]
+        stores = block["storeid"].unique()
+        if len(stores) < 2:
+            continue
+        sender, receiver = rng.choice(stores, size=2, replace=False)
+        when = dates[rng.integers(1, len(dates))]
+
+        sending = (frame["_sku"] == key) & (frame["storeid"] == sender) & (frame["_date"] >= when)
+        receiving = (frame["_sku"] == key) & (frame["storeid"] == receiver) & (frame["_date"] >= when)
+        if not sending.any() or not receiving.any():
+            continue
+
+        # Stock ON the transfer day, not the minimum over everything after it.
+        # Using the min meant any store that later hit zero could only ever
+        # transfer a single unit, which made the defect invisible.
+        on_the_day = frame.loc[
+            sending & (frame["_date"] == when), "store_stock"
+        ]
+        available = float(on_the_day.iloc[0]) if len(on_the_day) else 0.0
+        if available < 2:
+            continue
+        units = int(max(1, np.floor(available * share)))
+        frame.loc[sending, "store_stock"] = (
+            frame.loc[sending, "store_stock"] - units
+        ).clip(lower=0)
+        frame.loc[receiving, "store_stock"] = frame.loc[receiving, "store_stock"] + units
+
+    # Keep the components identity true; a real transfer would not break it.
+    frame["opening_stk"] = (
+        frame["warehouse_stock"] + frame["store_stock"] + frame["intransit_stock"]
+    )
+    for column in ("store_stock", "warehouse_stock", "intransit_stock", "opening_stk"):
+        frame[column] = frame[column].astype(int)
+    _write(frame.drop(columns=["_date", "_sku"]), path)
+
+
 DEFECTS = {
     "excel_broken_dates": excel_broken_dates,
+    "untracked_transfers": untracked_transfers,
     "store_id_o_zero_confusion": store_id_o_zero_confusion,
     "duplicate_replenishment_rows": duplicate_replenishment_rows,
     "constant_po_no": constant_po_no,

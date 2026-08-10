@@ -53,7 +53,36 @@ def _negative_binomial(rng, mean: np.ndarray, dispersion: float) -> np.ndarray:
     return out
 
 
-def simulate(rng: np.random.Generator, dims: Dimensions, defaults: dict) -> SimulationResult:
+def simulate(
+    rng: np.random.Generator,
+    dims: Dimensions,
+    defaults: dict,
+    *,
+    demand_rng: np.random.Generator | None = None,
+    replenishment_enabled: bool = True,
+    reorder_point_override: np.ndarray | None = None,
+) -> SimulationResult:
+    """Run the inventory simulation for one policy arm.
+
+    ``demand_rng`` draws latent demand and NOTHING else. Keeping it separate from
+    ``rng`` (which drives ordering decisions and lead times) is what makes arms
+    comparable: two runs with the same ``demand_rng`` seed see byte-identical
+    demand no matter how their replenishment policies differ. Sharing one
+    generator would let a skipped ordering draw shift the demand stream, and
+    every arm-to-arm comparison would then be measuring noise.
+
+    ``replenishment_enabled=False`` gives the counterfactual arm: stock is never
+    topped up, so each pair runs to a genuine stockout. That yields the TRUE
+    uncensored time-to-stockout, which is the only way to check whether an
+    estimator fitted on the replenished world is telling the truth.
+
+    ``reorder_point_override`` is an array of reorder points in UNITS, aligned to
+    ``dims.assortment`` row order, used to backtest a model-recommended policy.
+    """
+    if demand_rng is None:
+        # Offset keeps the default independent of the policy stream.
+        demand_rng = np.random.default_rng(int(defaults["seed"]) + 9973)
+
     stores = dims.stores.reset_index(drop=True)
     skus = dims.skus.reset_index(drop=True)
     calendar = dims.calendar.reset_index(drop=True)
@@ -121,8 +150,26 @@ def simulate(rng: np.random.Generator, dims: Dimensions, defaults: dict) -> Simu
     # ---- replenishment policy -------------------------------------------
     mean_weekday = float(weekday_factor.mean())
     expected_daily = np.maximum(pair_base * mean_weekday, 1e-6)
-    reorder_point = np.ceil(expected_daily * defaults["reorder_point_days_cover"])
-    order_up_to = np.ceil(expected_daily * defaults["order_up_to_days_cover"])
+    if reorder_point_override is not None:
+        reorder_point = np.asarray(reorder_point_override, dtype=float)
+        if reorder_point.shape != (n_pairs,):
+            raise ValueError(
+                f"reorder_point_override must have shape ({n_pairs},), "
+                f"got {reorder_point.shape}"
+            )
+        # A pair with no recommendation keeps the baseline rule, so the backtest
+        # measures the recommendations that exist rather than silently zeroing
+        # every SKU the model had nothing to say about.
+        baseline = np.ceil(expected_daily * defaults["reorder_point_days_cover"])
+        reorder_point = np.where(np.isnan(reorder_point), baseline, reorder_point)
+        # Keep the order-up-to level a fixed span above the reorder point, so a
+        # policy change alters WHEN we order without silently also changing how
+        # much. Otherwise the backtest cannot attribute the effect.
+        span = defaults["order_up_to_days_cover"] - defaults["reorder_point_days_cover"]
+        order_up_to = reorder_point + np.ceil(expected_daily * span)
+    else:
+        reorder_point = np.ceil(expected_daily * defaults["reorder_point_days_cover"])
+        order_up_to = np.ceil(expected_daily * defaults["order_up_to_days_cover"])
     lead_low, lead_high = defaults["dc_lead_time_days"]
     max_lead = int(lead_high)
     buffer_width = max_lead + 1
@@ -222,7 +269,8 @@ def simulate(rng: np.random.Generator, dims: Dimensions, defaults: dict) -> Simu
             * promo_lift[pair_store, day]
         )
         rate = np.where(live, rate, 0.0)
-        demand = _negative_binomial(rng, rate, defaults["nb_dispersion"])
+        # demand_rng, never rng: this draw must not depend on policy decisions.
+        demand = _negative_binomial(demand_rng, rate, defaults["nb_dispersion"])
         sold = np.minimum(demand, on_hand).astype(np.int32)
         lost = (demand - sold).astype(np.int32)
         on_hand = on_hand - sold
@@ -245,10 +293,10 @@ def simulate(rng: np.random.Generator, dims: Dimensions, defaults: dict) -> Simu
             out_lost[span] = lost[rows]
             cursor += n_rows
 
-        # 6. weekly review and ordering
+        # 6. weekly review and ordering (skipped entirely in the counterfactual arm)
         due = live & (((day - review_offset) % review_period) == 0)
         position = on_hand + pipeline.sum(axis=1)
-        needs = due & (position <= reorder_point)
+        needs = due & (position <= reorder_point) & replenishment_enabled
         candidates = np.flatnonzero(needs)
         if candidates.size:
             # The DC does not always serve the whole line.
@@ -327,13 +375,14 @@ def _assemble(
         panel[column] = sku_frame[column].to_numpy()[sku_of_row]
 
     # DC position per SKU per day, joined on so the accounting identity holds.
-    warehouse = pd.DataFrame(
-        np.vstack(warehouse_rows), index=calendar["date"], columns=sku_frame.index
+    # Built with melt rather than stack: stack's NaN handling and resulting index
+    # names differ between pandas 2.x and 3.x, and this package supports both.
+    warehouse = pd.DataFrame(np.vstack(warehouse_rows), columns=sku_frame.index)
+    warehouse["date"] = calendar["date"].to_numpy()
+    warehouse_long = warehouse.melt(
+        id_vars="date", var_name="sku_index", value_name="warehouse_stock"
     )
-    warehouse_long = (
-        warehouse.stack().rename("warehouse_stock").reset_index()
-        .rename(columns={"level_1": "sku_index", "date": "date"})
-    )
+    warehouse_long["sku_index"] = warehouse_long["sku_index"].astype(np.int64)
     panel = panel.merge(warehouse_long, on=["date", "sku_index"], how="left")
     panel["warehouse_stock"] = panel["warehouse_stock"].fillna(0).astype(np.int64)
     # opening_stk is the network total, which is how the real extract behaves.

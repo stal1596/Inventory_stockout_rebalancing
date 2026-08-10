@@ -1,0 +1,60 @@
+{
+  "n_train": 12788,
+  "n_test": 5513,
+  "split_date": "2025-10-16",
+  "features": [
+    "log_days_of_cover",
+    "log_trailing_demand",
+    "log_start_stock",
+    "size_extremity",
+    "log_price",
+    "promo_days_ahead",
+    "lead_time",
+    "forecast_units_month",
+    "tier_rank",
+    "zonecat_WEST",
+    "prodcat_CLOSE",
+    "prodcat_GIRLS_OPEN",
+    "prodcat_OPEN",
+    "prodcat_PREMIUM_CLOSE",
+    "prodcat_PREMIUM_OPEN"
+  ],
+  "cif_partition_error": 3.519406988061746e-14,
+  "metrics": [
+    {
+      "model": "LogNormal AFT",
+      "n_train": 12788,
+      "n_test": 5513,
+      "events_train": 6539,
+      "events_test": 1705,
+      "c_index_train": 0.6971664237565753,
+      "c_index_test": 0.6974665196365939,
+      "brier_7d": 0.028291284455109384,
+      "brier_14d": 0.13150412873235837,
+      "brier_28d": 0.20735450604219677,
+      "calibration_max_gap": 0.061051732584087026
+    },
+    {
+      "model": "Cox (cause-specific)",
+      "n_train": 12788,
+      "n_test": 5513,
+      "events_train": 6539,
+      "events_test": 1705,
+      "c_index_train": 0.6894532071821412,
+      "c_index_test": 0.6726927309008865,
+      "brier_7d": 0.029490152673939885,
+      "brier_14d": 0.14097251675362252,
+      "brier_28d": 0.1921575144972345,
+      "calibration_max_gap": 0.1611976643444002
+    }
+  ],
+  "calibration_max_gap": 0.061051732584087026,
+  "km_bias": {
+    "median_naive": 45.0,
+    "median_true": 28.0,
+    "median_gap_days": 17.0,
+    "max_vertical_gap": 0.353246115539287,
+    "direction": "optimistic",
+    "censored_share": 0.7375672043010753
+  }
+}

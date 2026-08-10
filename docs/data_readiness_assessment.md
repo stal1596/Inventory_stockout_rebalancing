@@ -211,7 +211,7 @@ therefore not independently censored: those spells are precisely the ones closes
 to failing. Feeding them to a plain Kaplan–Meier fitter as ordinary censored
 observations **biases the survival curve optimistic**.
 
-On the synthetic extract, **58.7% of spells end in a replenishment rather than a
+On the synthetic extract, **47.3% of spells end in a replenishment rather than a
 stockout** — this is not a marginal correction.
 
 Options, in order of preference:

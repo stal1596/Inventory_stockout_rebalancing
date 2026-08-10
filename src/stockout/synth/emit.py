@@ -355,6 +355,23 @@ def emit_ground_truth(result: SimulationResult, out: Path) -> None:
     result.store_entry.to_parquet(truth / "store_entry.parquet", index=False)
 
 
+def emit_counterfactual(result: SimulationResult, out: Path) -> None:
+    """Spells from the no-replenishment arm: the TRUE time-to-stockout.
+
+    Kept out of the CSV extract on purpose. This is not data a business could
+    ever observe -- it is the answer key for checking whether an estimator
+    fitted on the replenished world is telling the truth.
+    """
+    truth = out / "ground_truth"
+    truth.mkdir(parents=True, exist_ok=True)
+    result.spells.to_parquet(truth / "counterfactual_spells.parquet", index=False)
+    # Daily positions too, so holding cost can be compared across arms.
+    result.panel[
+        ["date", "storeid", "dns_item", "colour", "size", "store_stock",
+         "units_sold", "lost_units"]
+    ].to_parquet(truth / "counterfactual_panel.parquet", index=False)
+
+
 def emit_all(dims, result: SimulationResult, rng, out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     emit_store_dim(dims, out)

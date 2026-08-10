@@ -16,8 +16,9 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from stockout.synth import build_dimensions, emit_all, simulate  # noqa: E402
+from stockout.synth import arm_metrics, build_world, emit_all, run_arm  # noqa: E402
 from stockout.synth.defects import inject  # noqa: E402
+from stockout.synth.emit import emit_counterfactual  # noqa: E402
 
 CONFIG = Path(__file__).resolve().parents[1] / "config" / "synth_profiles.yaml"
 
@@ -36,6 +37,15 @@ def main() -> int:
         "--defect",
         action="append",
         help="Inject only this defect (repeatable). Implies --inject-defects.",
+    )
+    parser.add_argument(
+        "--counterfactual",
+        action="store_true",
+        help=(
+            "Also run a no-replenishment arm over identical latent demand and "
+            "write ground_truth/counterfactual_spells.parquet -- the true, "
+            "uncensored time-to-stockout used to check the estimators."
+        ),
     )
     args = parser.parse_args()
 
@@ -60,13 +70,14 @@ def main() -> int:
         f"~{profile['skus_per_store']} SKU-sizes per store, {profile['n_days']} days"
     )
 
-    dims = build_dimensions(rng, profile, defaults)
+    dims = build_world(profile, defaults, seed)
     print(
         f"  catalogue: {len(dims.skus):,} SKU-sizes, "
         f"{len(dims.assortment):,} store x SKU pairs"
     )
 
-    result = simulate(rng, dims, defaults)
+    baseline = run_arm(dims, defaults, "A-baseline", seed=seed)
+    result = baseline.result
     print(
         f"  simulated: {len(result.panel):,} panel rows, "
         f"{len(result.replenishment):,} replenishment lines, "
@@ -82,6 +93,33 @@ def main() -> int:
 
     emit_all(dims, result, rng, out)
     print(f"  written to {out}")
+
+    if args.counterfactual:
+        counterfactual = run_arm(
+            dims, defaults, "B-counterfactual", seed=seed, replenishment_enabled=False
+        )
+        emit_counterfactual(counterfactual.result, out)
+
+        # If the RNG split works, both arms saw exactly the same demand. This is
+        # the assumption every arm-to-arm comparison rests on, so it is asserted
+        # at generation time rather than hoped for later.
+        base_metrics, cf_metrics = arm_metrics(baseline), arm_metrics(counterfactual)
+        if base_metrics["units_demanded"] != cf_metrics["units_demanded"]:
+            raise SystemExit(
+                "Latent demand diverged between arms "
+                f"({base_metrics['units_demanded']:,} vs "
+                f"{cf_metrics['units_demanded']:,}). The RNG split is broken and "
+                "no arm comparison would be valid."
+            )
+        print(
+            f"  counterfactual: {len(counterfactual.result.spells):,} spells, "
+            f"{int(counterfactual.result.spells['event'].sum()):,} true stockouts"
+        )
+        print(
+            f"  demand identical across arms: {base_metrics['units_demanded']:,} units | "
+            f"fill rate {base_metrics['fill_rate']:.1%} (baseline) vs "
+            f"{cf_metrics['fill_rate']:.1%} (no replenishment)"
+        )
 
     if args.inject_defects or args.defect:
         applied = inject(out, rng, args.defect)

@@ -1,0 +1,3 @@
+extract,spells,stockout_events,replenished,median_duration,c_index,cover_coefficient
+clean,23192,9595,10976,19.0,0.6974665196365939,0.42565455598855634
+untracked transfers,24601,8936,13085,18.0,0.7694873181103714,0.5086192436019129

@@ -40,3 +40,29 @@ def extract_copy(tiny_extract, tmp_path) -> Path:
     target = tmp_path / "extract"
     shutil.copytree(tiny_extract, target)
     return target
+
+
+@pytest.fixture(scope="session")
+def model_extract(tmp_path_factory, synth_config) -> Path:
+    """A larger extract with both arms, sized so the regression is testable.
+
+    `tiny` is deliberately minimal for validation tests, but after burn-in and a
+    time-based split it leaves no events in the holdout, which makes ranking
+    metrics undefined rather than merely noisy.
+    """
+    from stockout.synth import build_world, run_arm
+    from stockout.synth.emit import emit_counterfactual
+
+    out = tmp_path_factory.mktemp("model")
+    defaults = synth_config["defaults"]
+    profile = synth_config["profiles"]["small"]
+
+    dims = build_world(profile, defaults)
+    baseline = run_arm(dims, defaults, "A-baseline")
+    emit_all(dims, baseline.result, np.random.default_rng(defaults["seed"]), out)
+
+    counterfactual = run_arm(
+        dims, defaults, "B-counterfactual", replenishment_enabled=False
+    )
+    emit_counterfactual(counterfactual.result, out)
+    return out
