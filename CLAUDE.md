@@ -21,7 +21,7 @@ Both verdicts are load-bearing. Do not quietly walk either of them back.
 ```bash
 uv sync --extra dev --extra survival     # survival extra is required for stage 2
 
-uv run pytest                            # 182 tests, ~70s
+uv run pytest                            # 176 tests, ~65s
 uv run pytest tests/test_spells.py -q -p no:warnings
 uv run pytest tests/test_estimators.py::test_naive_km_overstates_survival -q
 ```
@@ -29,11 +29,11 @@ uv run pytest tests/test_estimators.py::test_naive_km_overstates_survival -q
 Pipeline, in dependency order:
 
 ```bash
-uv run scripts/profile_data.py       --input sample_data/          # descriptive
-uv run scripts/run_validations.py    --input sample_data/          # pass/fail
 uv run scripts/generate_synthetic.py --profile dev --out data/synthetic --counterfactual
 uv run scripts/fit_model.py          --input data/synthetic --out reports/model
-uv run scripts/rank_critical_skus.py --input data/synthetic --horizon 14
+uv run scripts/rank_critical_skus.py --input data/synthetic --horizon 14 --drivers
+uv run scripts/simulate_risk.py       --input data/synthetic --as-of 2025-10-01
+uv run scripts/prescribe_actions.py   --input data/synthetic --as-of 2025-10-01
 uv run scripts/recommend_policy.py   --input data/synthetic --service-level 0.95 --backtest
 uv run scripts/diagnose_network.py   --input data/synthetic
 ```
@@ -41,7 +41,8 @@ uv run scripts/diagnose_network.py   --input data/synthetic
 `--counterfactual` matters: without it `fit_model.py` silently skips the bias
 experiment, which is the headline result.
 
-`run_validations.py --fail-on-error` exits non-zero on blocking errors, for CI.
+`reports/` is gitignored script output. `docs/model_report.md` embeds figures
+from it, so they render only after a local `fit_model.py` run.
 
 ## Architecture
 
@@ -52,9 +53,9 @@ CSV extract ──io.load_dataset──> Dataset {raw, canon}
                                     │
         ┌───────────────────────────┼────────────────────────────┐
         ▼                           ▼                            ▼
-  validate.run_all           spells.assemble_panel        synth.run_arm
-  (6 check groups)                  │                     (policy arms)
-                            spells.build_spells
+  validate.accounting        spells.assemble_panel        synth.run_arm
+  (invariants + transfer            │                     (policy arms)
+   detection)               spells.build_spells
                                     │
                           model.dataset.prepare  ──> ModelingData{train,test}
                                     │
@@ -66,6 +67,17 @@ CSV extract ──io.load_dataset──> Dataset {raw, canon}
 `Dataset` holds two views of every table: `raw` (strings exactly as read, so
 `########` survives) and `canon` (with `store_id` / `sku_uid` / `date` attached).
 Validation reads `raw`; everything else reads `canon`.
+
+**The validation suite was stripped to `accounting.py`.** Two consequences worth
+knowing before you trust an extract:
+
+- Nothing reports `########` any more — `structural.date_artifact` was its only
+  consumer. Destroyed date cells now become `NaT` silently via `io.parse_dates`.
+  `io.find_date_artifacts` survives, unused, as the documented contract.
+- Grain, join-rate and referential checks are gone for arbitrary extracts.
+  `tests/test_extract_contract.py` asserts those contracts for the *synthetic*
+  extract the pipeline runs on, which is what the build depends on — it is not a
+  substitute for validating a real one.
 
 ## Invariants that must not break
 
@@ -88,11 +100,21 @@ later and there is no goods-receipt date anywhere in the model.
 Using `Order_Date` as an arrival date splits spells on days nothing moved — it
 produced 296 spells against a true 255 with 29 wrong end reasons.
 
-**3. Covariates cannot see the future (`model/covariates.py`).** Every feature must
+**3. Covariates cannot see the future (`model/features/`).** Every feature must
 be computable at spell start. Trailing demand sums days *strictly before*
 `spell_start`; `units_sold_in_spell` is an outcome and must never become a feature.
 `tests/test_model_dataset.py` proves this mechanically by multiplying all sales from
-`spell_start` onward by 100 and asserting no feature moves.
+`spell_start` onward by 100 and asserting no feature moves — and it iterates
+`REGISTRY`, so **a newly registered feature is leakage-tested automatically**.
+That is the point of the registry: adding a feature is a decorator, not an edit
+to a 90-line function plus a remembered test change.
+
+Two `kind`s exist beside `numeric`. `derived` is computed and attached but never
+fitted — the raw form of a logged feature (`days_of_cover` beside
+`log_days_of_cover`) would be collinear, and scoring, the reorder solver and the
+prescription engine all read these. `categorical` is one-hot encoded by
+`model.dataset.encode`. `fillna` applies to **every** kind: a `derived` column
+whose fill is skipped propagates NaN into whatever depends on it.
 
 **4. Keys are built from atomic columns, never by splitting composites
 (`keys.py`).** `METRO_57_38_ROSE_GOLD` hides the separator inside the colour;
@@ -119,6 +141,20 @@ refused and every repair is reported. Never invent a valid-looking key.
 
 `tests/test_social.py` asserts all three.
 
+**7. The network is configuration, and every draw it adds goes on the POLICY rng
+(`config/network.yaml`, `synth/network.py`).** Vendor lead times, per-DC fill
+rates and DC→store transit are all drawn from `rng`, never `demand_rng`, so
+reconfiguring the network changes the supply world and leaves latent demand
+byte-identical. `tests/test_network_config.py` asserts that a deliberately
+crippled network (half the fill rate, double the transit) loses more units while
+demanding exactly the same total.
+
+Two structural rules: a zone served by two DCs is **refused at load**, because an
+ambiguous store→DC mapping is precisely the condition the real extract cannot
+resolve; and a DC must stock to cover its **vendor's** lead time, not a flat
+target. Measured, ignoring the second dropped chain fill rate from 90% to 58% and
+swamped the store-level signal the model exists to find.
+
 ## Configuration contracts
 
 **`config/schemas.yaml`** drives validation. Column names are the raw header
@@ -127,11 +163,19 @@ strings, quirks included. Adding an invariant (`sum_equals`, `ratio_equals`,
 `positive`) is a config change, not code — but a *new* invariant type needs a
 handler in `accounting._HANDLERS`, or `_declared_invariants` skips it silently.
 
-**`config/synth_profiles.yaml`** holds generation profiles and — importantly — the
-`defects:` map, which pairs each injectable defect with the check that must catch
-it. `tests/test_validations_catch_defects.py` asserts every pair, injecting each
-defect alone into clean data. **This is what stops the validation suite decaying
-into a no-op.** Adding a defect without a mapping fails the test.
+**`config/synth_profiles.yaml`** holds generation profiles, the social generation
+block, and two defect maps:
+
+- `defects:` — five injectors paired with the `accounting.*` check that must go
+  from passing to failing when each is injected alone.
+  `tests/test_validations_catch_defects.py` asserts every pair. **This is what
+  stops the surviving checks decaying into a no-op.**
+- `defects_uncaught:` — seven injectors whose checks were retired with the
+  validation strip. Each names its `retired_check`, so restoring one is a matter
+  of restoring that module.
+
+The drift guard asserts every injector in `defects.py` appears in **exactly one**
+of the two blocks, so adding one without deciding which side it falls on fails.
 
 Profiles: `tiny` (validation tests), `small` (model tests — `tiny` leaves zero
 events in the holdout, making ranking metrics undefined), `dev` (real runs),
@@ -156,28 +200,89 @@ events in the holdout, making ranking metrics undefined), `dev` (real runs),
 - **Lifelines jitter must be shared across fits** (`estimators.jitter_durations`).
   Letting each fit jitter independently leaves the CIF partition identity failing
   to close by ~2%.
+- **The Phase-1 feature gain came from demand and inventory, not from outcome
+  history.** Measured by ablation on `dev`, held-out C-index / cover coefficient:
+
+  | Feature set | C-index | cover coef |
+  |---|---|---|
+  | original 9 | 0.6987 | 0.425 |
+  | all new, minus the `history` group | 0.7166 | 0.576 |
+  | all new | 0.7186 | 0.601 |
+  | original 9 + `history` only | 0.6959 | 0.382 |
+
+  Worth keeping because `store_stockout_rate_90d` carries the largest non-intercept
+  coefficient (0.73) and yet adds almost nothing on its own — it is absorbing
+  store-level variance as a control, not predicting. Read that coefficient as a
+  store fixed effect, not as a driver, and do not present it to planners as one.
+  The cover coefficient moving 0.425 → 0.601 is the real result: that is the
+  demand estimate improving, which `CLAUDE.md` has always said is the main lever.
 
 ## What "working" looks like
 
 | Command | Expected |
 |---|---|
-| `pytest` | 182 passing |
-| validations on `sample_data/` | 133 checks, **23 blocking** |
-| validations on clean synthetic | 170 checks, **0 blocking**, 2 warnings |
-| validations on `--inject-defects` synthetic | 21 blocking; each defect trips its mapped check |
-| `fit_model.py` | KM bias +17d optimistic; AFT test C-index ~0.70 |
+| `pytest` | 263 passing |
+| `fit_model.py` | KM bias +17d optimistic; AFT test C-index ~0.79 |
+| `rank_critical_skus.py --drivers` | `log_days_of_cover` is the top driver for most at-risk rows |
+| `diagnose_network.py` | store→DC catchments recovered; transfers hide ~1% of sales |
+| `simulate_risk.py` | ~76% predicted vs ~72% actual stockouts; P10-P90 coverage ~82% |
+| `prescribe_actions.py` | ~70% "do nothing"; acted-on stock out 69% vs 34% left alone |
 
-The 2 warnings on clean synthetic are **expected and correct** — informative
-censoring is inherent to replenishment policy, and the forecast genuinely is
-monthly and national. Do not "fix" them.
+**Model metrics before and after the Phase-3 network rebuild are not
+comparable.** The data-generating process changed: DCs now hold their own stock
+and vendors ship with real lead-time variance, so stockouts became more
+structured and therefore more predictable. C-index moved 0.72 → 0.79 while the
+new DC features accounted for only +0.003 of it — the rest is the world, not the
+model. Compare within a network configuration, never across one.
 
-There used to be a third, "the social feed tracks competitor brands". It now
-passes because `synth/social.py` emits own-brand rows alongside competitors, so
-own-vs-competitor share of voice is computable. That the feed cannot be joined
-**below category grain** is still true and still enforced — see invariant 6.
+What *is* comparable, and the reason to trust the rebuild: **KM bias stayed at
+exactly +17d**. The mechanism — replenishment censoring precisely the spells
+about to fail — is a property of the policy, not of the network beneath it. Had
+that moved, the rebuild would have broken the competing-risks structure.
+
+Baselines at each phase live in `docs/baselines/`, so a change in C-index or the
+`log_days_of_cover` coefficient can be attributed rather than guessed at.
+
+The three validation rows that used to be in this table (`133 checks / 23
+blocking` on `sample_data`, `170 / 0` on clean synthetic, `21 blocking` on
+injected defects) went with `run_validations.py`. The equivalent gate is now
+`tests/test_extract_contract.py`.
+
+- **The Monte Carlo and the survival model answer different questions.** The AFT
+  ranks SKUs from covariates measured at spell start; `montecarlo.py` walks one
+  position forward under explicit demand, forecast-error and lead-time
+  distributions and returns *when* it empties, with an interval. They correlate
+  around 0.5 on 28-day risk, which is the point — identical outputs would mean
+  one of them is redundant. Neither validates the other.
+- **The Monte Carlo excludes future replenishment orders on purpose.** Only
+  committed supply (in transit today) counts. Model the orders a policy *would*
+  place and the output stops being "when does this position run out" and becomes
+  a policy backtest, which is what `synth/arms.py` is for. The consequence is
+  that upper-tail breaches are expected: real positions get topped up and outlive
+  every simulated path. **Judge calibration on the lower tail** — running out
+  earlier than P10 is the direction a planner is caught out by.
 
 ## Traps found the hard way
 
+- **A no-op lever is not a free lever.** In `prescribe.py`, units moved are
+  capped at what the horizon needs. When a position already held more than that
+  the cap hit zero, so the lever cost nothing and any simulation noise made it
+  look profitable — it was recommended on positions that needed nothing.
+  Gating on `moved > 0` moved precision from 48.9% to 69.3% and the do-nothing
+  share from 40% to 70%. Any lever whose cost can reach zero needs this check.
+- **Value saved units at MARGIN, not revenue.** The units were never bought, so
+  their cost was never incurred. Valuing at sticker price overstates every lever
+  by roughly 1/margin and makes absurd freight look worthwhile — it had the
+  engine acting on 81% of positions.
+- **A forward simulation can be wrong by 15x and every path still look sane.**
+  Two bugs in `montecarlo.py`, both invisible to inspection and both caught only
+  by the self-backtest in `simulate_risk.py`. Seeding the walk with `start_stock`
+  — the shelf when the spell *opened*, not today — handed each position back the
+  stock it had already sold. And counting `open_order_qty` as inbound on top of
+  in-transit double-counted goods that had already landed, because those orders
+  are the reason the spell started. Together: **4.3% predicted stockouts against
+  72% actual**. Never ship a simulation without a coverage check against realised
+  outcomes.
 - **Model metrics do not detect untracked inter-store transfers — they *improve*.**
   Injecting transfers cuts recorded stockouts 6.9% while raising C-index 0.697 →
   0.769. Only `accounting.stock_movement_sign` catches it; its residual *is* the

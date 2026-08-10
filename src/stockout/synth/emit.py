@@ -136,15 +136,13 @@ def emit_replenishment(result: SimulationResult, out: Path) -> None:
         ).to_csv(out / "replenishment_orders.csv", index=False)
         return
 
-    # A real warehouse identity, unlike the constant literal in the sample.
-    zone_of = {"North": "WH_NORTH", "South": "WH_SOUTH", "East": "WH_EAST", "West": "WH_WEST"}
-    warehouse = replen["storeid"].str[:1].map(
-        lambda c: list(zone_of.values())[ord(c) % len(zone_of)]
-    )
+    # The DC that actually served the line, carried through from the simulation.
+    # This used to be a hash of the store's first letter -- four plausible labels
+    # over a single stock pool, which made every allocation question unanswerable.
     frame = pd.DataFrame(
         {
             "Order_Date": pd.to_datetime(replen["date"]).dt.strftime(ISO),
-            "Warehouse_ID": warehouse,
+            "Warehouse_ID": replen["dc_id"],
             "Store_ID": replen["storeid"],
             "SKU": _sku_columns(replen),
             "Category": replen["category"],
@@ -220,22 +218,49 @@ def emit_forecast(dims, result: SimulationResult, out: Path) -> None:
     frame.to_csv(out / "forecast.csv", index=False)
 
 
-def emit_pending_orders(dims, rng, out: Path) -> None:
-    """Vendor purchase orders. Real PO numbers and line numbers, no store."""
-    options = dims.skus.drop_duplicates(subset=["dns_item", "colour"]).head(60)
+def emit_pending_orders(dims, result: SimulationResult, rng, out: Path) -> None:
+    """Open vendor purchase orders, derived from shipments that really happened.
+
+    Previously these were invented from ``dims`` alone and never touched the
+    simulation, so ``Delivery Date - Purchase Date`` was exactly the vendor's
+    stated lead time with zero spread -- nothing for a Monte Carlo to calibrate
+    against, and no link between a PO and the DC stock it was supposed to refill.
+
+    Two properties are deliberate and match the real extract:
+
+    * ``Delivery Date`` is the **promised** date. The actual arrival is drawn
+      around it in the simulation and written only to ``ground_truth/``, because
+      no goods-receipt field exists anywhere in the source data. That gap is the
+      finding, not an omission to be tidied away.
+    * The table is a SNAPSHOT of orders still open on ``AsOnDate``, which is why
+      it carries no store dimension and cannot attribute inbound supply to one.
+    """
+    orders = result.purchase_orders
+    as_on = dims.calendar["date"].iloc[-1]
+    if orders.empty:
+        pd.DataFrame(columns=PENDING_ORDER_COLUMNS).to_csv(
+            out / "pending_orders.csv", index=False
+        )
+        return
+
+    # Still open as of the snapshot: ordered, not yet promised to have landed.
+    open_orders = orders[
+        (orders["order_date"] <= as_on) & (orders["promised_date"] >= as_on)
+    ]
+    if open_orders.empty:
+        open_orders = orders.tail(200)
+
+    attributes = dims.skus.set_index(["dns_item", "colour", "size"])
     rows = []
-    po_number = 4500000001
-    for _, option in options.iterrows():
-        sizes = dims.skus[
-            (dims.skus["dns_item"] == option["dns_item"])
-            & (dims.skus["colour"] == option["colour"])
-        ]
-        purchase = dims.calendar["date"].iloc[
-            int(rng.integers(0, max(len(dims.calendar) // 2, 1)))
-        ]
-        delivery = purchase + pd.Timedelta(days=int(option["lead_time"]))
-        vendor_id, vendor_name = VENDORS[int(option["vendor_index"])]
-        for line, (_, sku) in enumerate(sizes.iterrows(), start=1):
+    # One PO per (DC, vendor, order date); its lines are the SKUs on it.
+    grouped = open_orders.groupby(["dc_id", "vendor_id", "order_date"], sort=True)
+    for po_number, ((dc_id, vendor_id, order_date), group) in enumerate(
+        grouped, start=4500000001
+    ):
+        for line, (_, order) in enumerate(group.iterrows(), start=1):
+            key = (order["dns_item"], order["colour"], str(order["size"]))
+            sku = attributes.loc[key]
+            sku = sku.iloc[0] if isinstance(sku, pd.DataFrame) else sku
             rows.append(
                 {
                     "Po_No": str(po_number),
@@ -243,27 +268,38 @@ def emit_pending_orders(dims, rng, out: Path) -> None:
                     "dns": sku["dns"],
                     "Item": sku["item"],
                     "color": sku["colour_code"],
-                    "cname": sku["colour"],
-                    "size": sku["size"],
-                    "quantity": int(rng.integers(20, 400)),
+                    "cname": order["colour"],
+                    "size": order["size"],
+                    "quantity": int(order["quantity"]),
                     "pcode": "1",
                     "Purchase Type": "Standard PO",
-                    "Purchase Date": purchase.strftime(ISO),
-                    "Delivery Date": delivery.strftime(ISO),
+                    "Purchase Date": pd.Timestamp(order["order_date"]).strftime(ISO),
+                    "Delivery Date": pd.Timestamp(order["promised_date"]).strftime(ISO),
                     "Vendor": str(vendor_id),
-                    "Vendor Name": vendor_name,
+                    "Vendor Name": order["vendor_name"],
                     "Purchase Group": "203",
-                    "locationskuname": f"{sku['dns_item']}_{sku['colour']}_{sku['size']}",
-                    "OPTIONS": f"{sku['dns_item']}_{sku['colour']}",
+                    "locationskuname": f"{order['dns_item']}_{order['colour']}_{order['size']}",
+                    "OPTIONS": f"{order['dns_item']}_{order['colour']}",
                     "PRODUCT": "AC",
-                    "PO From Date": (delivery - pd.Timedelta(days=15)).strftime(ISO),
-                    "AsOnDate": dims.calendar["date"].iloc[-1].strftime("%Y%m%d"),
+                    "Warehouse_ID": dc_id,
+                    "PO From Date": (
+                        pd.Timestamp(order["promised_date"]) - pd.Timedelta(days=15)
+                    ).strftime(ISO),
+                    "AsOnDate": as_on.strftime("%Y%m%d"),
                     "Company": sku["brand"],
                     "Purchase Group description": "Packing",
                 }
             )
-        po_number += 1
     pd.DataFrame(rows).to_csv(out / "pending_orders.csv", index=False)
+
+
+PENDING_ORDER_COLUMNS = [
+    "Po_No", "Line_No", "dns", "Item", "color", "cname", "size", "quantity",
+    "pcode", "Purchase Type", "Purchase Date", "Delivery Date", "Vendor",
+    "Vendor Name", "Purchase Group", "locationskuname", "OPTIONS", "PRODUCT",
+    "Warehouse_ID", "PO From Date", "AsOnDate", "Company",
+    "Purchase Group description",
+]
 
 
 def emit_promotions(dims, out: Path) -> None:
@@ -285,6 +321,14 @@ def emit_ground_truth(result: SimulationResult, out: Path) -> None:
     result.spells.to_parquet(truth / "ground_truth_spells.parquet", index=False)
     result.lifecycle.to_parquet(truth / "lifecycle.parquet", index=False)
     result.store_entry.to_parquet(truth / "store_entry.parquet", index=False)
+    if not result.purchase_orders.empty:
+        # Vendor shipments with PROMISED and ACTUAL arrival side by side. Kept
+        # out of the CSV extract because no goods-receipt date exists in the real
+        # data -- this is the answer key for scoring a lead-time assumption, in
+        # the same way counterfactual_spells.parquet is for a survival curve.
+        result.purchase_orders.to_parquet(
+            truth / "vendor_shipments.parquet", index=False
+        )
 
 
 def emit_counterfactual(result: SimulationResult, out: Path) -> None:
@@ -316,7 +360,7 @@ def emit_all(
     emit_sales(result, out)
     emit_replenishment(result, out)
     emit_forecast(dims, result, out)
-    emit_pending_orders(dims, rng, out)
+    emit_pending_orders(dims, result, rng, out)
     emit_promotions(dims, out)
     emit_vendors(dims, out)
     emit_external_signals(dims, result, rng, out, defaults)

@@ -104,23 +104,19 @@ profiles:
     n_days: 730
     partition_by: [year, month]
 
-# Defects reproduced by --inject-defects, each mapped to the validation check
-# that must catch it. tests/test_validations_catch_defects.py asserts this map.
+# Defects reproduced by --inject-defects.
+#
+# `defects:` are those whose catching check still exists. Each names the check
+# that must go from passing to failing when the defect is injected alone, and
+# tests/test_validations_catch_defects.py asserts every pair. That is what stops
+# the remaining checks decaying into a no-op.
+#
+# `defects_uncaught:` are still injectable and still describe real problems in
+# the source extract, but their checks lived in the validation modules retired
+# with the strip to accounting.py. They are listed rather than deleted so the
+# catalogue of known defects stays complete and the loss stays visible. The
+# drift guard asserts every injector appears in exactly one of the two blocks.
 defects:
-  excel_broken_dates:
-    description: Overwrite date cells with the literal "########".
-    tables: [inventory_daily, replenishment_orders, promotion_data]
-    expect_check: structural.date_artifact
-  store_id_o_zero_confusion:
-    description: Replace digit 0 with letter O in some inventory store ids.
-    tables: [inventory_daily]
-    # The lookup-assisted repair resolves these against store_dim, so the join
-    # itself survives. What must not happen is the repair being silent.
-    expect_check: referential.store_id_repaired
-  duplicate_replenishment_rows:
-    description: Duplicate (store, sku, size) lines with differing stock, no line id.
-    tables: [replenishment_orders]
-    expect_check: grain.duplicate_key
   constant_po_no:
     description: Set every Po_No to 4500000000.
     tables: [pending_orders]
@@ -129,22 +125,6 @@ defects:
     description: Set every Warehouse_ID to the literal "Warehouse".
     tables: [replenishment_orders]
     expect_check: accounting.warehouse_id_is_identifying
-  brand_typo:
-    description: Emit "LOOM & PACE" alongside "LOOM & LACE".
-    tables: [inventory_daily]
-    expect_check: referential.brand_variant
-  mixed_size_scales:
-    description: Emit an 83-90 size block next to the 28-48 EU block.
-    tables: [inventory_daily, pending_orders]
-    expect_check: referential.size_scale
-  uppercase_promo_cities:
-    description: Upper-case promotion city names so they miss store_dim.
-    tables: [promotion_data]
-    expect_check: referential.promotion_city_in_store_dim
-  orphan_sku_keys:
-    description: Emit inventory rows for SKUs absent from product_dim.
-    tables: [inventory_daily]
-    expect_check: referential.inventory_sku_in_product_dim
   broken_stock_identity:
     description: Perturb store_stock so the components stop summing to opening_stk.
     tables: [inventory_daily]
@@ -161,3 +141,42 @@ defects:
       with no order.
     tables: [inventory_daily]
     expect_check: accounting.stock_movement_sign
+
+# Still injectable, no longer caught by a validation check. Each `retired_check`
+# names the check that used to catch it, so restoring one is a matter of
+# restoring that module.
+#
+# `covered_by` marks the two that tests/test_extract_contract.py still catches on
+# the synthetic extract -- verified by injecting each and confirming the
+# assertion fires. The other five are genuinely uncovered.
+defects_uncaught:
+  excel_broken_dates:
+    description: Overwrite date cells with the literal "########".
+    tables: [inventory_daily, replenishment_orders, promotion_data]
+    retired_check: structural.date_artifact
+  store_id_o_zero_confusion:
+    description: Replace digit 0 with letter O in some inventory store ids.
+    tables: [inventory_daily]
+    retired_check: referential.store_id_repaired
+  duplicate_replenishment_rows:
+    description: Duplicate (store, sku, size) lines with differing stock, no line id.
+    tables: [replenishment_orders]
+    retired_check: grain.duplicate_key
+    covered_by: tests/test_extract_contract.py::test_declared_grain_is_unique
+  brand_typo:
+    description: Emit "LOOM & PACE" alongside "LOOM & LACE".
+    tables: [inventory_daily]
+    retired_check: referential.brand_variant
+  mixed_size_scales:
+    description: Emit an 83-90 size block next to the 28-48 EU block.
+    tables: [inventory_daily, pending_orders]
+    retired_check: referential.size_scale
+  uppercase_promo_cities:
+    description: Upper-case promotion city names so they miss store_dim.
+    tables: [promotion_data]
+    retired_check: referential.promotion_city_in_store_dim
+  orphan_sku_keys:
+    description: Emit inventory rows for SKUs absent from product_dim.
+    tables: [inventory_daily]
+    retired_check: referential.inventory_sku_in_product_dim
+    covered_by: tests/test_extract_contract.py::test_joins_resolve

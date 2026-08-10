@@ -18,35 +18,31 @@ needs a duration and an event; neither currently exists.
 **Stage 2:** on synthetic data whose answer is known, naive Kaplan–Meier
 **overstates median stock life by 17 days** (45 claimed vs 28 actual), because
 replenishment censors exactly the spells about to fail. The model ranks risk well
-(held-out C-index **0.70**) but does **not** beat a flat days-of-cover rule at
+(held-out C-index **0.72**) but does **not** beat a flat days-of-cover rule at
 setting reorder points.
 → **[`docs/model_report.md`](docs/model_report.md)**
 
 ## Quick start
 
 ```bash
-uv sync --extra dev
-
-# Profile and validate the real extract
-uv run scripts/profile_data.py    --input sample_data/
-uv run scripts/run_validations.py --input sample_data/ --report reports/validation_sample_data.md
+uv sync --extra dev --extra survival
 
 # Generate synthetic data, with the counterfactual arm the model is checked against
 uv run scripts/generate_synthetic.py --profile dev --out data/synthetic --counterfactual
-uv run scripts/run_validations.py    --input data/synthetic
 
-# Prove the validation suite actually catches the real defects
-uv run scripts/generate_synthetic.py --profile dev --inject-defects --out data/synthetic_dirty
-uv run scripts/run_validations.py    --input data/synthetic_dirty
-
-# Stage 2: fit, rank, and test a policy
+# Fit, rank, and test a policy
 uv run scripts/fit_model.py          --input data/synthetic --out reports/model
-uv run scripts/rank_critical_skus.py --input data/synthetic --horizon 14
+uv run scripts/rank_critical_skus.py --input data/synthetic --horizon 14 --drivers
 uv run scripts/recommend_policy.py   --input data/synthetic --service-level 0.95 --backtest
 uv run scripts/diagnose_network.py   --input data/synthetic
+uv run scripts/simulate_risk.py      --input data/synthetic --as-of 2025-10-01
+uv run scripts/prescribe_actions.py  --input data/synthetic --as-of 2025-10-01
 
 uv run pytest
 ```
+
+`reports/` is gitignored script output; the figures in `docs/model_report.md`
+render after a local `fit_model.py` run.
 
 ## What is here
 
@@ -56,13 +52,18 @@ uv run pytest
 | `docs/model_report.md` | **Stage 2 deliverable**: KM bias, competing risks, ranking, policy backtest |
 | `docs/data_model.md` | Identifier rules, table grains, spell definition, validation contract |
 | `config/schemas.yaml` | Machine-readable contract: grains, dtypes, invariants, join rules |
-| `config/synth_profiles.yaml` | Generation profiles and the defect → check map |
+| `config/synth_profiles.yaml` | Generation profiles, social block, and the defect → check map |
+| `config/network.yaml` | Vendors, DCs and transfer rules — the network is configuration |
 | `src/stockout/keys.py` | Identifier normalisation and composite-key parsing |
 | `src/stockout/spells.py` | Panel → survival spell table |
-| `src/stockout/validate/` | Six check groups (133 checks on `sample_data/`, 170 on a complete extract) |
+| `src/stockout/validate/` | Stock-accounting invariants and untracked-transfer detection |
 | `src/stockout/synth/` | Simulation with recorded ground truth, policy arms, defect injection |
 | `src/stockout/synth/social.py` | Social feed driven by the simulation's own latent demand, so a social feature can actually be tested |
-| `src/stockout/model/` | Covariates, estimators, evaluation, scoring, reorder policy, plots |
+| `src/stockout/model/features/` | Feature registry — declare a feature, it is built, leakage-tested and encoded |
+| `src/stockout/model/attribution.py` | Exact AFT decomposition: which features cost this SKU how many days |
+| `src/stockout/model/montecarlo.py` | Forward simulation of the stockout date under demand, forecast and lead-time uncertainty |
+| `src/stockout/model/prescribe.py` | Rebalance / expedite-DC / expedite-supplier, valued against doing nothing |
+| `src/stockout/model/` | Estimators, evaluation, scoring, reorder policy, plots |
 | `reports/model/` | Figures and metric CSVs |
 | `sample_data/` | The supplied extract (9 CSVs, 93 rows) |
 
@@ -85,21 +86,19 @@ uv run pytest
 
 | Input | Expectation |
 |---|---|
-| `sample_data/` | 133 checks, **23 blocking errors** — reproduces the assessment's findings |
-| clean synthetic | 170 checks, **0 blocking errors**; 2 warnings that are genuine domain properties, not defects |
-| dirty synthetic | **21 blocking errors** — each injected defect trips its mapped check |
-| `fit_model.py` | KM bias +17d optimistic; AFT test C-index ~0.70 |
-| `diagnose_network.py` | single DC pool; transfers hide 6.9% of stockouts |
-| `pytest` | 182 passing |
+| `fit_model.py` | KM bias +17d optimistic; AFT test C-index ~0.79 |
+| `diagnose_network.py` | store→DC catchments recovered from `warehouse_stock` |
+| `pytest` | 263 passing |
 
-The two warnings on clean synthetic are expected: informative censoring is
-inherent to replenishment policy, and the forecast is genuinely monthly and
-national.
+The validation suite was stripped to stock-accounting checks, so the former
+check-count expectations no longer apply. `tests/test_extract_contract.py` is
+the gate on the synthetic extract; note that nothing now reports `########`
+date artifacts in a real extract.
 
 ## What Stage 2 concluded
 
 - **Use the model to triage**, ranked by expected lost revenue. Validated: C-index
-  0.70 held out, calibration gap 0.06, no train/test gap.
+  0.72 held out, no train/test gap.
 - **Do not use it to set reorder points.** That is off-policy extrapolation — the
   incumbent rule reorders at 12 days of cover, so the data holds almost no
   examples of a position running lower.
@@ -109,12 +108,15 @@ national.
   scale; Cox's constant-hazard-multiplier assumption is wrong and cost 0.12 of
   held-out C-index.
 - **The biggest lever is a better demand-rate estimate**, not a better survival
-  model — the cover coefficient is attenuated to 0.35 by regression dilution when
-  it should be ~1.0.
+  model. Confirmed by acting on it: adding demand-quality and stock-position
+  features moved the cover coefficient 0.43 → 0.60 against a physics-implied 1.0,
+  and held-out C-index 0.70 → 0.72. Regression dilution accounts for the rest.
 - **Untracked transfers hide stockouts and model metrics will not warn you.**
   Injected into clean data they cut recorded stockouts by 6.9% while *raising*
   held-out C-index to 0.769. Only the accounting residual detects them — run
   `accounting.stock_movement_sign` on the real extract first.
-- **The store→DC mapping cannot be recovered** from `warehouse_stock` here: it is
-  identical across every store, so it is a network total. Allocation needs a real
-  `Warehouse_ID`.
+- **The store→DC mapping is recoverable when DCs really hold separate stock.**
+  In the supplied extract `warehouse_stock` is identical across every store, so
+  it is a network total and allocation needs a real `Warehouse_ID`. The simulator
+  now models per-DC stock, and `diagnose_dc_structure` recovers the catchments
+  exactly — which is what makes rebalancing and expediting testable at all.

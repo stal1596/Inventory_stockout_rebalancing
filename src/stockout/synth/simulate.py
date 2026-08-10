@@ -12,7 +12,7 @@ correctly, rather than comparing a value to itself.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -25,16 +25,22 @@ from stockout.spells import (
     EVENT_STOCKOUT,
 )
 from stockout.synth.dims import Dimensions
+from stockout.synth.network import Network, load_network
 
 
 @dataclass
 class SimulationResult:
     panel: pd.DataFrame           # store x SKU x day positions and sales
     replenishment: pd.DataFrame   # DC -> store order lines
-    warehouse: pd.DataFrame       # SKU x day DC position
+    warehouse: pd.DataFrame       # DC x SKU x day position
     spells: pd.DataFrame          # ground-truth survival spells
     lifecycle: pd.DataFrame       # SKU discontinuation dates
     store_entry: pd.DataFrame     # store open dates
+    purchase_orders: pd.DataFrame = field(default_factory=pd.DataFrame)
+    # vendor -> DC lines: promised vs ACTUAL arrival. The actual date is ground
+    # truth on purpose -- no goods-receipt field exists in the real extract, so
+    # it is never emitted to CSV, only kept so the Monte Carlo's lead-time
+    # assumption can be scored against what really happened.
 
 
 def _seasonality(doy: np.ndarray, amplitude: float, peak: int) -> np.ndarray:
@@ -61,6 +67,7 @@ def simulate(
     demand_rng: np.random.Generator | None = None,
     replenishment_enabled: bool = True,
     reorder_point_override: np.ndarray | None = None,
+    network: "Network | None" = None,
 ) -> SimulationResult:
     """Run the inventory simulation for one policy arm.
 
@@ -78,10 +85,17 @@ def simulate(
 
     ``reorder_point_override`` is an array of reorder points in UNITS, aligned to
     ``dims.assortment`` row order, used to backtest a model-recommended policy.
+
+    ``network`` supplies the vendor -> DC -> store structure. Every draw it adds
+    (vendor lead times, per-DC fill rates, DC->store lead times) goes on ``rng``,
+    never ``demand_rng``, so latent demand stays byte-identical across arms no
+    matter how the network is configured. ``tests/test_arms.py`` asserts it.
     """
     if demand_rng is None:
         # Offset keeps the default independent of the policy stream.
         demand_rng = np.random.default_rng(int(defaults["seed"]) + 9973)
+    if network is None:
+        network = load_network()
 
     stores = dims.stores.reset_index(drop=True)
     skus = dims.skus.reset_index(drop=True)
@@ -170,9 +184,27 @@ def simulate(
     else:
         reorder_point = np.ceil(expected_daily * defaults["reorder_point_days_cover"])
         order_up_to = np.ceil(expected_daily * defaults["order_up_to_days_cover"])
-    lead_low, lead_high = defaults["dc_lead_time_days"]
-    max_lead = int(lead_high)
+    # ---- network resolution ---------------------------------------------
+    # Each store is served by exactly one DC and each SKU sourced from one
+    # vendor, both from config. Before this the DC was a single pool indexed by
+    # SKU alone, so `warehouse_stock` was a network total and no allocation
+    # question could be asked of it.
+    dc_of_store = network.dc_of_store(stores)
+    vendor_of_sku = network.vendor_of_sku(skus)
+    pair_dc = dc_of_store[pair_store]
+    n_dcs = network.n_dcs
+
+    dc_lead_low, dc_lead_high = network.dc_lead_bounds()
+    max_lead = int(dc_lead_high.max())
     buffer_width = max_lead + 1
+    dc_fill_rate = network.dc_vector("fill_rate", defaults["dc_fill_rate"])
+    dc_review = network.dc_vector("review_period_days", 7.0).astype(int)
+    dc_target_cover = network.dc_vector("target_days_cover", 60.0)
+
+    vendor_lead = network.vendor_vector("lead_time_days", 60.0)
+    vendor_sigma = network.vendor_vector("lead_time_sigma", 0.0)
+    vendor_reliability = network.vendor_vector("reliability", 1.0)
+
     review_period = int(defaults["review_period_days"])
     review_offset = rng.integers(0, review_period, size=n_pairs)
 
@@ -180,11 +212,29 @@ def simulate(
     on_hand = np.ceil(expected_daily * rng.uniform(cover_low, cover_high, n_pairs)).astype(np.float32)
     pipeline = np.zeros((n_pairs, buffer_width), dtype=np.float32)
 
-    # ---- warehouse -------------------------------------------------------
-    dc_stock = np.ceil(
-        np.bincount(pair_sku, weights=expected_daily, minlength=n_skus) * 60.0
-    ).astype(np.float32)
-    dc_inbound_every = 30
+    # ---- DC positions ----------------------------------------------------
+    # Demand each DC is actually responsible for: the pairs it serves, not the
+    # whole chain. This is what makes two DCs hold genuinely different stock.
+    dc_sku_daily = np.zeros((n_dcs, n_skus), dtype=np.float64)
+    np.add.at(dc_sku_daily, (pair_dc, pair_sku), expected_daily)
+
+    # A DC must cover its VENDOR's lead time, not just a nominal target. With
+    # 45-90 day factory lead times, stocking to a flat 60 days guarantees the DC
+    # runs dry mid-cycle -- measured, that alone dropped chain fill rate from
+    # 90% to 58% and swamped the store-level signal the model is about.
+    sku_vendor_lead = vendor_lead[vendor_of_sku]
+    dc_cover_target = np.maximum(
+        dc_target_cover[:, None], sku_vendor_lead[None, :] * 1.6
+    )
+    # Reorder when the position no longer covers the lead time plus a review
+    # cycle, which is the same logic the stores use one echelon down.
+    dc_reorder_days = sku_vendor_lead[None, :] + dc_review[:, None]
+    dc_stock = np.ceil(dc_sku_daily * dc_cover_target).astype(np.float32)
+    # Vendor pipeline is its own buffer because factory lead times (45-90 days)
+    # are an order of magnitude longer than DC->store ones.
+    vendor_buffer = int(np.ceil(vendor_lead.max() + 4 * vendor_sigma.max())) + 2
+    dc_pipeline = np.zeros((n_dcs, n_skus, vendor_buffer), dtype=np.float32)
+    po_rows: list[tuple] = []
 
     # ---- output buffers --------------------------------------------------
     capacity = n_pairs * n_days
@@ -299,21 +349,28 @@ def simulate(
         needs = due & (position <= reorder_point) & replenishment_enabled
         candidates = np.flatnonzero(needs)
         if candidates.size:
-            # The DC does not always serve the whole line.
-            served = rng.random(candidates.size) < defaults["dc_fill_rate"]
+            # Fill rate is now a property of the SERVING DC, so a store behind a
+            # weaker DC is genuinely worse served than one behind a strong one.
+            served = rng.random(candidates.size) < dc_fill_rate[pair_dc[candidates]]
             candidates = candidates[served]
         if candidates.size:
             quantity = np.maximum(
                 np.ceil(order_up_to[candidates] - position[candidates]), 1.0
             ).astype(np.float32)
             sku_of = pair_sku[candidates]
-            available = dc_stock[sku_of]
+            dc_of = pair_dc[candidates]
+            # Drawn from THIS store's DC, which may be empty while another is not
+            # -- the condition that makes rebalancing a real decision.
+            available = dc_stock[dc_of, sku_of]
             quantity = np.minimum(quantity, available)
             keep = quantity > 0
-            candidates, quantity, sku_of = candidates[keep], quantity[keep], sku_of[keep]
+            candidates, quantity = candidates[keep], quantity[keep]
+            sku_of, dc_of = sku_of[keep], dc_of[keep]
             if candidates.size:
-                np.subtract.at(dc_stock, sku_of, quantity)
-                lead = rng.integers(lead_low, lead_high + 1, size=candidates.size)
+                np.subtract.at(dc_stock, (dc_of, sku_of), quantity)
+                lead = rng.integers(
+                    dc_lead_low[dc_of], dc_lead_high[dc_of] + 1, size=candidates.size
+                )
                 arrival_slot = (day + lead) % buffer_width
                 np.add.at(pipeline, (candidates, arrival_slot), quantity)
                 for pair, qty, current in zip(
@@ -321,13 +378,45 @@ def simulate(
                 ):
                     replen_rows.append((day, int(pair), float(current), float(qty)))
 
-        # 7. DC replenishment and its own daily position
-        if day % dc_inbound_every == 0:
-            dc_stock += np.ceil(
-                np.bincount(pair_sku, weights=expected_daily, minlength=n_skus)
-                * dc_inbound_every
-                * 1.1
-            ).astype(np.float32)
+        # 7. vendor -> DC replenishment, and the DC's own daily position
+        vendor_arrivals = dc_pipeline[:, :, day % vendor_buffer].copy()
+        dc_pipeline[:, :, day % vendor_buffer] = 0.0
+        dc_stock += vendor_arrivals
+
+        for dc in range(n_dcs):
+            if day % max(int(dc_review[dc]), 1) != 0:
+                continue
+            inbound = dc_pipeline[dc].sum(axis=1)
+            position_dc = dc_stock[dc] + inbound
+            target = dc_sku_daily[dc] * dc_cover_target[dc]
+            reorder_at = dc_sku_daily[dc] * dc_reorder_days[dc]
+            # Only order for SKUs this DC actually serves.
+            short = (position_dc < reorder_at) & (dc_sku_daily[dc] > 0)
+            lines = np.flatnonzero(short)
+            if not lines.size:
+                continue
+            vendor_of = vendor_of_sku[lines]
+            shipped = rng.random(lines.size) < vendor_reliability[vendor_of]
+            lines, vendor_of = lines[shipped], vendor_of[shipped]
+            if not lines.size:
+                continue
+            quantity = np.ceil(target[lines] - position_dc[lines]).astype(np.float32)
+            # Promise is the vendor's stated lead time; reality is drawn around
+            # it. No field in the extract records the difference.
+            promised = vendor_lead[vendor_of]
+            actual = np.maximum(
+                np.round(rng.normal(promised, vendor_sigma[vendor_of])), 1.0
+            )
+            slot = ((day + actual.astype(int)) % vendor_buffer).astype(int)
+            np.add.at(dc_pipeline, (dc, lines, slot), quantity)
+            for sku, qty, vendor, promise, real in zip(
+                lines, quantity, vendor_of, promised, actual
+            ):
+                po_rows.append(
+                    (day, dc, int(sku), int(vendor), float(qty),
+                     int(day + promise), int(day + real))
+                )
+
         warehouse_rows.append(dc_stock.copy())
 
         # 8. pairs leaving observation today close their spell
@@ -344,6 +433,7 @@ def simulate(
         out_intransit[:cursor], out_units[:cursor], out_lost[:cursor],
         replen_rows, warehouse_rows, spell_records,
         pair_store, pair_sku, discontinue_day, store_open_day,
+        pair_dc, dc_of_store, vendor_of_sku, po_rows, network,
     )
 
 
@@ -352,6 +442,7 @@ def _assemble(
     days, pair_ids, stock, intransit, units, lost,
     replen_rows, warehouse_rows, spell_records,
     pair_store, pair_sku, discontinue_day, store_open_day,
+    pair_dc, dc_of_store, vendor_of_sku, po_rows, network,
 ) -> SimulationResult:
     """Turn the simulation's arrays into tidy frames."""
     dates = calendar["date"].to_numpy()
@@ -374,20 +465,36 @@ def _assemble(
                    "assortment", "gender", "avg_price"):
         panel[column] = sku_frame[column].to_numpy()[sku_of_row]
 
-    # DC position per SKU per day, joined on so the accounting identity holds.
-    # Built with melt rather than stack: stack's NaN handling and resulting index
-    # names differ between pandas 2.x and 3.x, and this package supports both.
-    warehouse = pd.DataFrame(np.vstack(warehouse_rows), columns=sku_frame.index)
-    warehouse["date"] = calendar["date"].to_numpy()
-    warehouse_long = warehouse.melt(
-        id_vars="date", var_name="sku_index", value_name="warehouse_stock"
+    # DC position per DC per SKU per day. Indexed directly rather than melted and
+    # merged: the array is (days, n_dcs, n_skus) and a fancy-index straight onto
+    # the panel rows avoids materialising a frame n_dcs times larger than the one
+    # the single-pool version built.
+    warehouse_array = np.stack(warehouse_rows)
+    panel_dc = pair_dc[pair_ids]
+    panel["warehouse_stock"] = warehouse_array[days, panel_dc, sku_of_row].astype(
+        np.int64
     )
-    warehouse_long["sku_index"] = warehouse_long["sku_index"].astype(np.int64)
-    panel = panel.merge(warehouse_long, on=["date", "sku_index"], how="left")
-    panel["warehouse_stock"] = panel["warehouse_stock"].fillna(0).astype(np.int64)
-    # opening_stk is the network total, which is how the real extract behaves.
+    panel["dc_id"] = np.asarray(network.dc_ids)[panel_dc]
+    # opening_stk stays the position visible to THIS store: its own shelf, its
+    # inbound, and the DC actually serving it. Summing every DC would restore the
+    # network total the real extract carries and lose the allocation signal again.
     panel["opening_stk"] = (
         panel["warehouse_stock"] + panel["store_stock"] + panel["intransit_stock"]
+    )
+
+    warehouse_long = pd.DataFrame(
+        {
+            "date": np.repeat(dates, warehouse_array.shape[1] * warehouse_array.shape[2]),
+            "dc_index": np.tile(
+                np.repeat(np.arange(warehouse_array.shape[1]), warehouse_array.shape[2]),
+                len(dates),
+            ),
+            "sku_index": np.tile(
+                np.arange(warehouse_array.shape[2]),
+                len(dates) * warehouse_array.shape[1],
+            ),
+            "warehouse_stock": warehouse_array.reshape(-1),
+        }
     )
 
     replenishment = pd.DataFrame(
@@ -395,8 +502,11 @@ def _assemble(
     )
     if not replenishment.empty:
         replenishment["date"] = dates[replenishment["day"].to_numpy()]
-        replenishment["storeid"] = store_ids[pair_store[replenishment["pair"].to_numpy()]]
-        sku_of_replen = pair_sku[replenishment["pair"].to_numpy()]
+        pairs_of_replen = replenishment["pair"].to_numpy()
+        replenishment["storeid"] = store_ids[pair_store[pairs_of_replen]]
+        # The REAL serving DC, not a hash of the store code.
+        replenishment["dc_id"] = np.asarray(network.dc_ids)[pair_dc[pairs_of_replen]]
+        sku_of_replen = pair_sku[pairs_of_replen]
         for column in ("dns_item", "colour", "size", "brand", "category", "subcat"):
             replenishment[column] = sku_frame[column].to_numpy()[sku_of_replen]
 
@@ -428,8 +538,54 @@ def _assemble(
         lifecycle["size"] = sku_frame["size"].to_numpy()[lifecycle["sku_index"]]
 
     store_entry = pd.DataFrame(
-        {"storeid": store_ids, "open_date": dates[store_open_day]}
+        {
+            "storeid": store_ids,
+            "open_date": dates[store_open_day],
+            # The store -> DC mapping, recorded so a consumer can check whether
+            # `diagnose_dc_structure` recovers it from `warehouse_stock` alone.
+            "dc_id": np.asarray(network.dc_ids)[dc_of_store],
+        }
     )
+
+    purchase_orders = pd.DataFrame(
+        po_rows,
+        columns=["order_day", "dc_index", "sku_index", "vendor_index", "quantity",
+                 "promised_day", "actual_day"],
+    )
+    if not purchase_orders.empty:
+        # Offset from the start date rather than indexing the calendar: a PO
+        # placed near the end of the window is promised for AFTER it, and
+        # clipping to the last simulated day would silently truncate a 90-day
+        # lead time down to whatever fits.
+        origin = pd.Timestamp(dates[0])
+        for column, source in (
+            ("order_date", "order_day"),
+            ("promised_date", "promised_day"),
+            ("actual_date", "actual_day"),
+        ):
+            purchase_orders[column] = origin + pd.to_timedelta(
+                purchase_orders[source].to_numpy(), unit="D"
+            )
+        purchase_orders["dc_id"] = np.asarray(network.dc_ids)[
+            purchase_orders["dc_index"].to_numpy()
+        ]
+        purchase_orders["vendor_id"] = np.asarray(network.vendor_ids)[
+            purchase_orders["vendor_index"].to_numpy()
+        ]
+        purchase_orders["vendor_name"] = np.asarray(network.vendor_names)[
+            purchase_orders["vendor_index"].to_numpy()
+        ]
+        for column in ("dns_item", "colour", "size"):
+            purchase_orders[column] = sku_frame[column].to_numpy()[
+                purchase_orders["sku_index"].to_numpy()
+            ]
+        # The lead-time realisation the extract never records.
+        purchase_orders["lead_days_promised"] = (
+            purchase_orders["promised_day"] - purchase_orders["order_day"]
+        )
+        purchase_orders["lead_days_actual"] = (
+            purchase_orders["actual_day"] - purchase_orders["order_day"]
+        )
 
     return SimulationResult(
         panel=panel,
@@ -438,4 +594,5 @@ def _assemble(
         spells=spells,
         lifecycle=lifecycle,
         store_entry=store_entry,
+        purchase_orders=purchase_orders,
     )

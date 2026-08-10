@@ -15,7 +15,8 @@ import pandas as pd
 import pytest
 
 from stockout.io import load_config, load_dataset
-from stockout.model import covariates as cov
+from stockout.model import features as cov
+from stockout.model.features.registry import REGISTRY, derived_columns
 from stockout.model.dataset import (
     build_modeling_frame,
     prepare,
@@ -73,18 +74,45 @@ def _with_sales_edit(dataset, spells, mask_fn, transform):
 
 
 def test_covariates_ignore_all_sales_from_spell_start_onward(dataset, spells):
-    """Multiply the outcome window by 100; every feature must be unchanged."""
+    """Multiply the outcome window by 100; every feature must be unchanged.
+
+    Iterates the REGISTRY, not the fitted list, so a newly registered feature is
+    leakage-tested the moment it exists -- including `derived` columns, which are
+    not fitted but do reach the scoring frame and the prescription engine.
+    """
     last = _last_spell_per_pair(spells)
     honest = cov.build_covariates(last, dataset)
     tainted = _with_sales_edit(
         dataset, last, lambda date, start: date >= start, lambda units: units * 100
     )
 
-    for feature in cov.FEATURES:
+    checked = [name for name in REGISTRY if name in honest.columns]
+    assert len(checked) >= len(cov.FEATURES), "registry iteration is not covering the fitted set"
+
+    for feature in checked:
         pd.testing.assert_series_equal(
             honest[feature], tainted[feature], check_names=False,
             obj=f"feature {feature!r} changed when future sales changed",
         )
+
+
+def test_every_registered_feature_reaches_the_frame(frame):
+    """A feature that silently failed to build would be invisible otherwise.
+
+    The synthetic extract has every table, so nothing should be gated out by
+    `requires=`; anything missing here failed rather than skipped.
+    """
+    missing = [name for name in REGISTRY if name not in frame.columns]
+    assert not missing, f"registered but never attached: {missing}"
+
+
+def test_derived_columns_are_not_fitted():
+    """Raw and log forms of the same quantity must not both enter the model."""
+    overlap = set(derived_columns()) & set(cov.FEATURES)
+    assert not overlap, f"derived columns leaked into the fitted set: {sorted(overlap)}"
+    # The specific collinearity this guards against.
+    assert "days_of_cover" not in cov.FEATURES
+    assert "log_days_of_cover" in cov.FEATURES
 
 
 def test_trailing_demand_excludes_the_spell_start_day(dataset, spells):
@@ -158,7 +186,7 @@ def test_features_have_no_missing_values(frame):
 
 def test_imputed_demand_rates_are_flagged_not_hidden(frame):
     assert "demand_rate_imputed" in frame.columns
-    assert frame["demand_rate_imputed"].dtype == bool
+    assert set(frame["demand_rate_imputed"].unique()) <= {0.0, 1.0}
 
 
 # --------------------------------------------------------------------------

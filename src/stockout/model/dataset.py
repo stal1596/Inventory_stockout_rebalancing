@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from stockout.io import Dataset
-from stockout.model.covariates import (
+from stockout.model.features import (
     BURN_IN_DAYS,
     CATEGORICAL_FEATURES,
     FEATURES,

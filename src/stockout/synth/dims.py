@@ -97,11 +97,33 @@ def _make_store_id(city: str, index: int, used: set[str]) -> str:
     raise RuntimeError(f"ran out of store codes for {city}")
 
 
+def _city_order() -> list[tuple[str, str, str, str]]:
+    """Cities interleaved by zone, so a small profile still spans the network.
+
+    CITIES is grouped by zone for readability, and taking it in order gave the
+    `tiny` profile four South-zone stores -- one DC, a constant ``Warehouse_ID``,
+    and no allocation question to ask. Striping round-robin across zones means
+    even four stores sit behind different DCs.
+    """
+    by_zone: dict[str, list[tuple[str, str, str, str]]] = {}
+    for city in CITIES:
+        by_zone.setdefault(city[2], []).append(city)
+
+    ordered: list[tuple[str, str, str, str]] = []
+    zones = list(by_zone)
+    for position in range(max(len(v) for v in by_zone.values())):
+        for zone in zones:
+            if position < len(by_zone[zone]):
+                ordered.append(by_zone[zone][position])
+    return ordered
+
+
 def build_stores(rng: np.random.Generator, n_stores: int) -> pd.DataFrame:
     used: set[str] = set()
     rows = []
+    cities = _city_order()
     for index in range(n_stores):
-        city, state, zone, tier = CITIES[index % len(CITIES)]
+        city, state, zone, tier = cities[index % len(cities)]
         display_area = int(rng.integers(400, 1600))
         rows.append(
             {

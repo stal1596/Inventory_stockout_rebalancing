@@ -38,16 +38,43 @@ def with_transfers(model_extract, tmp_path_factory):
 # DC structure
 # --------------------------------------------------------------------------
 
-def test_single_pool_warehouse_stock_is_identified_as_such(clean):
-    """The generator models one DC pool, so the diagnostic must say so.
+def test_store_to_dc_mapping_is_recovered_from_warehouse_stock(clean, model_extract):
+    """With per-DC stock, the catchments must fall out of the data itself.
 
-    Reporting 'single pool' is the useful answer: it means allocation cannot be
-    built from this column and genuinely needs a new field.
+    This is the whole point of making the DC a real echelon. While `dc_stock` was
+    a single array indexed by SKU, `warehouse_stock` was identical everywhere and
+    the honest answer was "SINGLE POOL -- allocation needs a field you do not
+    have". Now the column carries the structure and the mapping is recoverable.
+    """
+    import pandas as pd
+
+    result = diagnose_dc_structure(clean)
+    assert result["varying_share"] > 0.5
+    assert result["n_groups"] > 1
+    assert "SERVING GROUPS" in result["verdict"]
+
+    # And the recovered grouping must match the configured one, not just be
+    # some partition: a diagnostic that finds structure of the wrong shape is
+    # worse than one that finds none.
+    truth = pd.read_parquet(model_extract / "ground_truth" / "store_entry.parquet")
+    expected = truth.groupby("dc_id")["storeid"].apply(frozenset)
+    recovered = {frozenset(stores) for stores in result["groups"].values()}
+    assert recovered == set(expected), (
+        f"recovered {sorted(map(sorted, recovered))} "
+        f"but stores are served by {sorted(map(sorted, expected))}"
+    )
+
+
+def test_signature_grouping_is_not_fooled_by_assortment(clean):
+    """Stores carry different SKUs; that must not read as different DCs.
+
+    Regression guard for a real defect: hashing each store's whole column
+    including its missing-value pattern returned one 'DC' per store -- a
+    confident answer that was really just a restatement of the assortment.
     """
     result = diagnose_dc_structure(clean)
-    assert result["n_groups"] == 1
-    assert "SINGLE POOL" in result["verdict"]
-    assert result["varying_share"] < 0.01
+    n_stores = sum(len(v) for v in result["groups"].values())
+    assert result["n_groups"] < n_stores
 
 
 def test_dc_diagnostic_survives_a_missing_table():

@@ -1,6 +1,7 @@
-"""Rank the open stock positions worth acting on.
+"""Rank the open stock positions worth acting on, and say why each is at risk.
 
     uv run scripts/rank_critical_skus.py --input data/synthetic --horizon 14
+    uv run scripts/rank_critical_skus.py --input data/synthetic --as-of 2025-10-01
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from stockout.io import load_config, load_dataset  # noqa: E402
+from stockout.model import attribution  # noqa: E402
 from stockout.model import estimators as est  # noqa: E402
 from stockout.model.dataset import prepare  # noqa: E402
 from stockout.model.score import open_spells_at, rank_critical_skus, to_report  # noqa: E402
@@ -28,6 +30,20 @@ def main() -> int:
     parser.add_argument("--out", default="reports/critical_skus.csv")
     parser.add_argument("--horizon", type=float, default=14)
     parser.add_argument("--top", type=int, default=15)
+    parser.add_argument(
+        "--as-of",
+        help=(
+            "Scoring date (YYYY-MM-DD). Defaults to the last date in the panel. "
+            "Only spells open on this date are scored, and elapsed time is "
+            "measured to it -- so an earlier date genuinely re-runs the decision "
+            "as it stood then."
+        ),
+    )
+    parser.add_argument(
+        "--drivers",
+        action="store_true",
+        help="Attach the features pushing each SKU toward a stockout.",
+    )
     args = parser.parse_args()
 
     dataset = load_dataset(Path(args.input), load_config())
@@ -36,7 +52,8 @@ def main() -> int:
     c_index = est.concordance(model, data.test, data.features)
     print(f"Fitted AFT on {len(data.train):,} spells | held-out C-index {c_index:.3f}")
 
-    open_now = open_spells_at(data.all_rows)
+    requested = pd.Timestamp(args.as_of) if args.as_of else None
+    open_now = open_spells_at(data.all_rows, as_of=requested)
     if open_now.empty:
         print("No spells are open on the scoring date; nothing to rank.")
         return 0
@@ -45,6 +62,8 @@ def main() -> int:
     print(f"Scoring {len(open_now):,} open positions as of {as_of}")
 
     scored = rank_critical_skus(model, open_now, data.features, horizon=args.horizon)
+    if args.drivers:
+        scored = attribution.explain(model, scored, data.features, data.train)
     report = to_report(scored)
 
     out_path = Path(args.out)
@@ -72,6 +91,19 @@ def main() -> int:
     top_value = set(report.nsmallest(args.top, "rank_by_revenue")["sku_uid"])
     print(f"  overlap between top-{args.top} by risk and by revenue: "
           f"{len(top_risk & top_value)} of {args.top}")
+
+    if args.drivers:
+        summary = attribution.driver_summary(
+            model, scored, data.features, data.train
+        )
+        print("\n=== What is driving risk across the scored population ===")
+        print(summary.head(8).to_string(index=False))
+        print(
+            "\n  Effects are DAYS of expected stock life lost relative to a\n"
+            "  typical position, and they are associational: a driver says where\n"
+            "  the risk comes from, not which lever fixes it."
+        )
+
     print(f"\nWritten to {out_path}")
     return 0
 

@@ -21,6 +21,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from stockout.synth.dims import Dimensions, build_dimensions
+from stockout.synth.network import Network, load_network
 from stockout.synth.simulate import SimulationResult, simulate
 
 # Offsets applied to the configured seed. Fixed constants, not magic: the point
@@ -51,12 +52,16 @@ def run_arm(
     seed: int | None = None,
     replenishment_enabled: bool = True,
     reorder_point_override: np.ndarray | None = None,
+    network: Network | None = None,
 ) -> Arm:
     """Run one arm with freshly seeded streams.
 
     Both generators are recreated from the seed on every call, so two arms enter
     the day loop in an identical state. Reusing a partially consumed generator
     would silently shift the demand stream and make the comparison meaningless.
+
+    ``network`` is shared across arms like ``dims``: comparing a policy under two
+    different networks would confound the two changes.
     """
     seed = int(defaults["seed"]) if seed is None else int(seed)
     result = simulate(
@@ -66,6 +71,7 @@ def run_arm(
         demand_rng=np.random.default_rng(seed + _DEMAND_OFFSET),
         replenishment_enabled=replenishment_enabled,
         reorder_point_override=reorder_point_override,
+        network=network if network is not None else load_network(),
     )
     return Arm(name=name, result=result, replenishment_enabled=replenishment_enabled)
 

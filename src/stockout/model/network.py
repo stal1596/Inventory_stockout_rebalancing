@@ -14,7 +14,9 @@ from stockout.io import Dataset
 from stockout.spells import assemble_panel
 
 
-def diagnose_dc_structure(dataset: Dataset, sample_observations: int = 400) -> dict:
+def diagnose_dc_structure(
+    dataset: Dataset, sample_observations: int = 400, min_overlap: int = 5
+) -> dict:
     """Does ``warehouse_stock`` cluster stores into serving DCs?
 
     With multiple regional DCs, two stores served by different DCs should see
@@ -57,14 +59,33 @@ def diagnose_dc_structure(dataset: Dataset, sample_observations: int = 400) -> d
 
     groups: dict[str, list[str]] = {}
     if not wide.empty:
-        # Stores whose observed DC position is identical everywhere draw from
-        # the same pool.
-        signatures = {}
-        for store in wide.columns:
-            column = wide[store]
-            signatures[store] = hash(tuple(np.nan_to_num(column.to_numpy(), nan=-1)))
-        for store, signature in signatures.items():
-            groups.setdefault(f"group_{abs(signature) % 100000}", []).append(store)
+        # Two stores share a pool if the DC position they report AGREES wherever
+        # both happen to carry the same SKU on the same day.
+        #
+        # Hashing each store's whole column instead is wrong and quietly so:
+        # stores carry different assortments, so their missing-value patterns
+        # differ and every store hashes uniquely. That reports one "DC" per
+        # store -- a plausible-looking answer that is really just a restatement
+        # of the assortment.
+        stores = list(wide.columns)
+        parent = {store: store for store in stores}
+
+        def find(store: str) -> str:
+            while parent[store] != store:
+                parent[store] = parent[parent[store]]
+                store = parent[store]
+            return store
+
+        for left_index, left in enumerate(stores):
+            for right in stores[left_index + 1:]:
+                both = wide[[left, right]].dropna()
+                if len(both) < min_overlap:
+                    continue
+                if np.allclose(both[left].to_numpy(), both[right].to_numpy()):
+                    parent[find(left)] = find(right)
+
+        for store in stores:
+            groups.setdefault(f"group_{find(store)}", []).append(store)
 
     n_groups = len(groups)
     if varying_share < 0.01:

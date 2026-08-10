@@ -1,0 +1,108 @@
+# Supply network: vendors -> distribution centres -> stores.
+#
+# Before this file the "network" was cosmetic. `dc_stock` was a single array
+# indexed by SKU alone, so `warehouse_stock` was identical across every store
+# (measured: it varied on 0.0000 of SKU-days) while `emit_replenishment` wrote
+# four warehouse labels derived from a hash of the store's first letter. The
+# data looked multi-DC; the physics was one pool. Every rebalancing or expediting
+# prescription would have been validated against that fiction.
+#
+# Each DC now holds its own stock, is replenished by a named vendor with a real
+# lead-time distribution, and serves an explicit set of stores.
+
+echelons: [vendor, dc, store]
+
+# Factory -> DC. `lead_time_days` is the PROMISED lead time, which is what
+# `pending_orders.Delivery Date` carries in the real extract; `lead_time_sigma`
+# is the spread the promise does not mention and no field records. That gap is
+# deliberate: it is the thing a Monte Carlo has to reason about and the reason
+# supplier lead time cannot be calibrated from the extract alone.
+vendors:
+  - id: "110016"
+    name: METMILL FOOTWEAR PVT.LTD. - I
+    lead_time_days: 45
+    lead_time_sigma: 6
+    reliability: 0.94          # share of ordered lines the vendor actually ships
+    expedite_days: 18
+    expedite_cost_multiplier: 1.5
+  - id: "120050"
+    name: METMILL FOOTWEAR PVT. LTD(MODA
+    lead_time_days: 60
+    lead_time_sigma: 9
+    reliability: 0.90
+    expedite_days: 24
+    expedite_cost_multiplier: 1.6
+  - id: "100678"
+    name: GLOBAL VENTURE EXPORTS
+    lead_time_days: 90
+    lead_time_sigma: 14
+    reliability: 0.86
+    expedite_days: 35
+    expedite_cost_multiplier: 1.9
+  - id: "147173"
+    name: NEXON OMNIVERSE LIMITED
+    lead_time_days: 60
+    lead_time_sigma: 7
+    reliability: 0.92
+    expedite_days: 22
+    expedite_cost_multiplier: 1.4
+  - id: "131204"
+    name: SOUTHERN SOLE INDUSTRIES
+    lead_time_days: 45
+    lead_time_sigma: 5
+    reliability: 0.95
+    expedite_days: 15
+    expedite_cost_multiplier: 1.3
+
+# DC -> store. `serves_zones` is the store->DC mapping made explicit, which is
+# exactly what `network.diagnose_dc_structure` reports as unrecoverable from the
+# real extract. `target_days_cover` is how deep the DC stocks itself.
+dcs:
+  - id: WH_SOUTH
+    name: Southern DC
+    serves_zones: ["SOUTH ZONE"]
+    store_lead_days: [2, 6]
+    fill_rate: 0.92
+    review_period_days: 7
+    target_days_cover: 55
+    expedite_days: 1
+    expedite_cost_multiplier: 2.5
+  - id: WH_WEST
+    name: Western DC
+    serves_zones: ["WEST ZONE"]
+    store_lead_days: [3, 8]
+    fill_rate: 0.88
+    review_period_days: 7
+    target_days_cover: 60
+    expedite_days: 1
+    expedite_cost_multiplier: 2.5
+  - id: WH_NORTH
+    name: Northern DC
+    serves_zones: ["NORTH ZONE"]
+    store_lead_days: [3, 9]
+    fill_rate: 0.86
+    review_period_days: 7
+    target_days_cover: 60
+    expedite_days: 2
+    expedite_cost_multiplier: 2.8
+  - id: WH_EAST
+    name: Eastern DC
+    serves_zones: ["EAST ZONE"]
+    store_lead_days: [4, 11]
+    fill_rate: 0.83
+    review_period_days: 7
+    target_days_cover: 65
+    expedite_days: 2
+    expedite_cost_multiplier: 3.0
+
+# Store -> store. The cheapest lever, and the one the extract cannot see:
+# untracked transfers are confirmed to happen and are recorded nowhere, which is
+# why `accounting.stock_movement_sign` is the only instrument that detects them.
+transfers:
+  enabled: true
+  scope: same_zone            # same_city | same_zone | any
+  lead_days: [1, 3]
+  cost_per_unit: 40
+  # A donor must keep this much cover for itself, or rebalancing simply moves
+  # the stockout to the store that helped.
+  min_donor_cover_days: 14

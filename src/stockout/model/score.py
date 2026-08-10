@@ -139,6 +139,11 @@ REPORT_COLUMNS = [
     "p_stockout_7d", "p_stockout_14d", "p_stockout_28d",
     "expected_days_out", "expected_lost_units", "expected_lost_revenue",
     "rank_by_risk", "rank_by_units", "rank_by_revenue",
+    # Present only when --drivers ran; to_report keeps whatever exists.
+    "predicted_median_days",
+    "driver_1", "driver_1_effect",
+    "driver_2", "driver_2_effect",
+    "driver_3", "driver_3_effect",
 ]
 
 
