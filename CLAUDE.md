@@ -4,24 +4,63 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-Stockout risk for footwear retail, in two stages:
+Stockout risk for footwear retail, from raw extract to a working product. Four
+capabilities, each built on the one before:
 
-- **Stage 1 — data readiness.** Verdict: the supplied `sample_data/` **cannot**
-  support survival analysis. No sales table, a single inventory snapshot, and 51
-  date cells destroyed by an Excel export (literal `########`). See
-  `docs/data_readiness_assessment.md`.
-- **Stage 2 — the model.** Built and validated on synthetic data whose answer is
-  known by construction. Verdict: the model is **good for ranking risk, not for
-  setting reorder points**. See `docs/model_report.md`.
+1. **Stockout risk** — survival analysis (log-normal AFT) over store × SKU spells.
+2. **Attribution** — why *this* SKU is at risk, decomposed exactly.
+3. **Monte Carlo** — when it runs out, with an interval, under demand /
+   forecast / lead-time uncertainty.
+4. **Prescriptions** — transfer, expedite from DC, expedite from supplier, or do
+   nothing — over a configurable vendor → DC → store network.
 
-Both verdicts are load-bearing. Do not quietly walk either of them back.
+All four are reachable from a web application (`app/`), which presents them as
+one journey: descriptive → predictive → simulation → prescriptive.
+
+### Two verdicts that remain load-bearing
+
+- **The supplied `sample_data/` cannot support survival analysis.** No sales
+  table, a single inventory snapshot, 51 date cells destroyed by an Excel export
+  (literal `########`). See `docs/data_readiness_assessment.md`.
+- **The model ranks risk well; it must not set reorder points.** Inverting it is
+  off-policy extrapolation and it failed. See `docs/model_report.md`.
+
+Everything downstream is built and validated on **synthetic data whose answer is
+known by construction**. Do not quietly walk either verdict back.
+
+## Where things live
+
+```
+src/stockout/           the engine — pure library, no web dependencies
+  io.py                 load CSVs, attach canonical keys (raw + canon views)
+  keys.py               identifier parsing and repair
+  spells.py             daily panel -> survival spells
+  validate/accounting.py  stock invariants + untracked-transfer detection
+  synth/                the generator: dims, simulate, arms, emit, social, network
+  model/
+    features/           the feature REGISTRY (see invariant 3)
+    estimators.py       KM / Aalen-Johansen / AFT / Cox + the KM bias experiment
+    dataset.py          spells -> features -> time split
+    score.py            conditional risk, ranking by expected lost revenue
+    attribution.py      exact AFT decomposition ("why is this at risk")
+    montecarlo.py       forward simulation with calibrated uncertainty
+    prescribe.py        three levers, valued against doing nothing
+    policy.py           reorder points from lead-time demand
+    network.py          DC-structure recovery, unexplained-movement measurement
+
+app/api/                FastAPI over the engine; state.py holds the warm cache
+app/web/                React + Vite + Tailwind control tower
+config/                 schemas.yaml · synth_profiles.yaml · network.yaml
+docs/baselines/         metrics captured at each build step, for attribution
+scripts/                one entry point per stage
+```
 
 ## Commands
 
 ```bash
-uv sync --extra dev --extra survival     # survival extra is required for stage 2
+uv sync --extra dev --extra survival --extra api
 
-uv run pytest                            # 176 tests, ~65s
+uv run pytest                            # 292 tests, ~115s
 uv run pytest tests/test_spells.py -q -p no:warnings
 uv run pytest tests/test_estimators.py::test_naive_km_overstates_survival -q
 ```
@@ -32,8 +71,8 @@ Pipeline, in dependency order:
 uv run scripts/generate_synthetic.py --profile dev --out data/synthetic --counterfactual
 uv run scripts/fit_model.py          --input data/synthetic --out reports/model
 uv run scripts/rank_critical_skus.py --input data/synthetic --horizon 14 --drivers
-uv run scripts/simulate_risk.py       --input data/synthetic --as-of 2025-10-01
-uv run scripts/prescribe_actions.py   --input data/synthetic --as-of 2025-10-01
+uv run scripts/simulate_risk.py      --input data/synthetic --as-of 2025-10-01
+uv run scripts/prescribe_actions.py  --input data/synthetic --as-of 2025-10-01
 uv run scripts/recommend_policy.py   --input data/synthetic --service-level 0.95 --backtest
 uv run scripts/diagnose_network.py   --input data/synthetic
 ```
@@ -48,13 +87,9 @@ The web application:
 
 ```bash
 cd app/web && npm install && npm run build && cd ../..
-uv run uvicorn app.api.main:app --port 8000     # ~50s warm-up, then in-memory
+uv run uvicorn app.api.main:app --port 8000     # -> http://127.0.0.1:8000
+cd app/web && npm run dev                       # frontend work; proxies /api to 8000
 ```
-
-`app/api/state.py` resolves everything expensive once at startup — extract, AFT
-fit, scored population, prescriptions, descriptive rollups. Nothing recomputes
-per request; a per-request `prescribe.recommend` measured 3.4 s for a single SKU
-because it rescans the panel.
 
 ## Architecture
 
@@ -71,14 +106,32 @@ CSV extract ──io.load_dataset──> Dataset {raw, canon}
                                     │
                           model.dataset.prepare  ──> ModelingData{train,test}
                                     │
-                    model.estimators (KM / Aalen-Johansen / AFT / Cox)
+              model.estimators (KM / Aalen-Johansen / AFT / Cox)
                                     │
-                    model.score (ranking) · model.policy (reorder points)
+        ┌───────────────┬───────────┴───────────┬────────────────┐
+        ▼               ▼                       ▼                ▼
+  model.score     model.attribution      model.montecarlo   model.policy
+  (ranking)       (why at risk)          (when, with an     (reorder points)
+        │               │                 interval)               │
+        └───────────────┴──────────┬────────────┴────────────────┘
+                                   ▼
+                            model.prescribe
+                     (transfer / expedite / do nothing)
+                                   │
+                          app/api  ──>  app/web
 ```
 
 `Dataset` holds two views of every table: `raw` (strings exactly as read, so
 `########` survives) and `canon` (with `store_id` / `sku_uid` / `date` attached).
 Validation reads `raw`; everything else reads `canon`.
+
+**The web layer computes nothing per request.** `app/api/state.py` resolves the
+extract, the AFT fit, the scored population, every prescription and the
+descriptive rollups once at startup (~50 s), and serves slices thereafter. This
+is not premature optimisation: a per-request `prescribe.recommend` measured
+**3.4 s for a single SKU** because it rescans the 525k-row panel to find today's
+stock and the donor pool. Precomputing also means the recommendation list and the
+per-SKU detail are literally the same rows, so they cannot drift apart.
 
 **The validation suite was stripped to `accounting.py`.** Two consequences worth
 knowing before you trust an extract:
@@ -112,15 +165,14 @@ later and **the supplied extract has no goods-receipt date anywhere**.
 Using `Order_Date` as an arrival date splits spells on days nothing moved — it
 produced 296 spells against a true 255 with 29 wrong end reasons.
 
-*The synthetic extract now also emits `goods_receipts.csv` and
-`store_receipts.csv`* — the fields a well-instrumented business would record,
-added so supplier on-time performance is computable in the product instead of
-being a blank tile. **This does not change the rule.** `assemble_panel` still
-infers, because a real extract will not have these files and the inference is the
-path that has to keep working. The two are a useful cross-check rather than a
-replacement: measured on `dev`, observed store lead time is 5.72d ± 2.26 against
-5.66d ± 2.28 inferred, so the inference is sound. Where the UI shows a lead time
-it says which of the two it used.
+*The synthetic extract also emits `goods_receipts.csv` and `store_receipts.csv`* —
+the fields a well-instrumented business would record, added so supplier on-time
+performance is computable in the product instead of being a blank tile. **This
+does not change the rule.** `assemble_panel` still infers, because a real extract
+will not have these files and the inference is the path that has to keep working.
+The two are a cross-check rather than a replacement: measured on `dev`, observed
+store lead time is 5.72d ± 2.26 against 5.66d ± 2.28 inferred, so the inference is
+sound. Where the UI shows a lead time it says which of the two it used.
 
 **3. Covariates cannot see the future (`model/features/`).** Every feature must
 be computable at spell start. Trailing demand sums days *strictly before*
@@ -177,13 +229,26 @@ resolve; and a DC must stock to cover its **vendor's** lead time, not a flat
 target. Measured, ignoring the second dropped chain fill rate from 90% to 58% and
 swamped the store-level signal the model exists to find.
 
+**8. Every surface reports the same stock (`app/api/state.py`).** `start_stock` is
+the shelf when the SPELL OPENED — correct as a model input, wrong as something to
+show a user. `stock_on_hand` and `cover_days_now` are resolved as of the scoring
+date and are what the risk table, the detail panel, the depletion timeline, the
+simulator seed and the recommendation all read.
+
+Without this the same SKU read *"16 on hand, 7.1 days cover"* on one page and
+*"10 units, 4.4 days"* on the next. A user who spots that stops believing every
+other number on the screen. `tests/test_api.py` asserts the three surfaces agree,
+and that cover is consistent with the stock and rate shown beside it.
+
 ## Configuration contracts
 
-**`config/schemas.yaml`** drives validation. Column names are the raw header
-strings, quirks included. Adding an invariant (`sum_equals`, `ratio_equals`,
-`non_negative`, `not_constant`, `constant_within_group`, `date_order`,
-`positive`) is a config change, not code — but a *new* invariant type needs a
-handler in `accounting._HANDLERS`, or `_declared_invariants` skips it silently.
+**`config/schemas.yaml`** drives loading and validation. Column names are the raw
+header strings, quirks included. Adding an invariant (`sum_equals`,
+`ratio_equals`, `non_negative`, `not_constant`, `constant_within_group`,
+`date_order`, `positive`) is a config change, not code — but a *new* invariant
+type needs a handler in `accounting._HANDLERS`, or `_declared_invariants` skips
+it silently. `io.load_dataset` iterates `config["tables"]` to find files at all,
+so a table absent from this file is invisible to everything.
 
 **`config/synth_profiles.yaml`** holds generation profiles, the social generation
 block, and two defect maps:
@@ -194,14 +259,20 @@ block, and two defect maps:
   stops the surviving checks decaying into a no-op.**
 - `defects_uncaught:` — seven injectors whose checks were retired with the
   validation strip. Each names its `retired_check`, so restoring one is a matter
-  of restoring that module.
+  of restoring that module. Two carry `covered_by`, pointing at the contract test
+  that still catches them.
 
 The drift guard asserts every injector in `defects.py` appears in **exactly one**
 of the two blocks, so adding one without deciding which side it falls on fails.
 
-Profiles: `tiny` (validation tests), `small` (model tests — `tiny` leaves zero
-events in the holdout, making ranking metrics undefined), `dev` (real runs),
+Profiles: `tiny` (validation tests), `small` (model + API tests — `tiny` leaves
+zero events in the holdout, making ranking metrics undefined), `dev` (real runs),
 `medium` / `full` (larger).
+
+**`config/network.yaml`** defines vendors, DCs and the transfer policy. Changing
+the network is a YAML edit; the simulator, the emitted `Warehouse_ID`, the
+network view and the prescription engine's feasibility tests all read the same
+resolved object.
 
 ## Decisions with non-obvious rationale
 
@@ -222,7 +293,26 @@ events in the holdout, making ranking metrics undefined), `dev` (real runs),
 - **Lifelines jitter must be shared across fits** (`estimators.jitter_durations`).
   Letting each fit jitter independently leaves the CIF partition identity failing
   to close by ~2%.
-- **The Phase-1 feature gain came from demand and inventory, not from outcome
+- **Attribution is exact, so do not reach for SHAP.** The AFT is linear on the
+  log-time scale, so `b_j × (x_j − x̄_j)` decomposes the prediction with no
+  approximation and sums to it exactly. Contributions are **associational**: two
+  documented traps are `store_stockout_rate_90d` (a store fixed effect with no
+  lever behind it) and `intransit_units` (negative coefficient — stock is in
+  transit *because* the position is thin; read as causation it says "cancel the
+  shipment").
+- **The Monte Carlo and the survival model answer different questions.** The AFT
+  ranks SKUs from covariates measured at spell start; `montecarlo.py` walks one
+  position forward under explicit distributions and returns *when* it empties,
+  with an interval. They correlate around 0.5 on 28-day risk, which is the point —
+  identical outputs would mean one is redundant. Neither validates the other.
+- **The Monte Carlo excludes future replenishment orders on purpose.** Only
+  committed supply (in transit today) counts. Model the orders a policy *would*
+  place and the output stops being "when does this position run out" and becomes
+  a policy backtest, which is what `synth/arms.py` is for. The consequence is
+  that upper-tail breaches are expected: real positions get topped up and outlive
+  every simulated path. **Judge calibration on the lower tail** — running out
+  earlier than P10 is the direction a planner is caught out by.
+- **The feature-registry gain came from demand and inventory, not outcome
   history.** Measured by ablation on `dev`, held-out C-index / cover coefficient:
 
   | Feature set | C-index | cover coef |
@@ -232,12 +322,16 @@ events in the holdout, making ranking metrics undefined), `dev` (real runs),
   | all new | 0.7186 | 0.601 |
   | original 9 + `history` only | 0.6959 | 0.382 |
 
-  Worth keeping because `store_stockout_rate_90d` carries the largest non-intercept
-  coefficient (0.73) and yet adds almost nothing on its own — it is absorbing
-  store-level variance as a control, not predicting. Read that coefficient as a
-  store fixed effect, not as a driver, and do not present it to planners as one.
-  The cover coefficient moving 0.425 → 0.601 is the real result: that is the
-  demand estimate improving, which `CLAUDE.md` has always said is the main lever.
+  History is worth keeping as a control, not as a driver: `store_stockout_rate_90d`
+  carries the largest non-intercept coefficient and yet adds almost nothing alone.
+  The cover coefficient moving 0.425 → 0.601 against a physics-implied 1.0 is the
+  real result — that is the demand estimate improving, which has always been the
+  main lever here.
+- **Charts follow the `dataviz` skill, and the palette is validated, not chosen.**
+  The three categorical slots in use pass `--pairs all` in both modes (worst CVD
+  ΔE 9.2 light / 9.4 dark). Light-mode aqua sits at 2.74:1, below the 3:1 bar, so
+  the relief rule applies — every chart ships direct labels with a table beside
+  it. Risk bands use the reserved status palette and always carry a text label.
 
 ## What "working" looks like
 
@@ -249,20 +343,21 @@ events in the holdout, making ranking metrics undefined), `dev` (real runs),
 | `diagnose_network.py` | store→DC catchments recovered; transfers hide ~1% of sales |
 | `simulate_risk.py` | ~76% predicted vs ~72% actual stockouts; P10-P90 coverage ~82% |
 | `prescribe_actions.py` | ~70% "do nothing"; acted-on stock out 69% vs 34% left alone |
+| `uvicorn app.api.main:app` | ~50s warm-up, then KPIs ~17ms, a 10k-path simulation ~40ms |
 
-**Model metrics before and after the Phase-3 network rebuild are not
-comparable.** The data-generating process changed: DCs now hold their own stock
-and vendors ship with real lead-time variance, so stockouts became more
-structured and therefore more predictable. C-index moved 0.72 → 0.79 while the
-new DC features accounted for only +0.003 of it — the rest is the world, not the
-model. Compare within a network configuration, never across one.
+**Model metrics before and after the network rebuild are not comparable.** The
+data-generating process changed: DCs now hold their own stock and vendors ship
+with real lead-time variance, so stockouts became more structured and therefore
+more predictable. C-index moved 0.72 → 0.79 while the new DC features accounted
+for only +0.003 of it — the rest is the world, not the model. Compare within a
+network configuration, never across one.
 
 What *is* comparable, and the reason to trust the rebuild: **KM bias stayed at
 exactly +17d**. The mechanism — replenishment censoring precisely the spells
 about to fail — is a property of the policy, not of the network beneath it. Had
 that moved, the rebuild would have broken the competing-risks structure.
 
-Baselines at each phase live in `docs/baselines/`, so a change in C-index or the
+Baselines at each step live in `docs/baselines/`, so a change in C-index or the
 `log_days_of_cover` coefficient can be attributed rather than guessed at.
 
 The three validation rows that used to be in this table (`133 checks / 23
@@ -270,22 +365,17 @@ blocking` on `sample_data`, `170 / 0` on clean synthetic, `21 blocking` on
 injected defects) went with `run_validations.py`. The equivalent gate is now
 `tests/test_extract_contract.py`.
 
-- **The Monte Carlo and the survival model answer different questions.** The AFT
-  ranks SKUs from covariates measured at spell start; `montecarlo.py` walks one
-  position forward under explicit demand, forecast-error and lead-time
-  distributions and returns *when* it empties, with an interval. They correlate
-  around 0.5 on 28-day risk, which is the point — identical outputs would mean
-  one of them is redundant. Neither validates the other.
-- **The Monte Carlo excludes future replenishment orders on purpose.** Only
-  committed supply (in transit today) counts. Model the orders a policy *would*
-  place and the output stops being "when does this position run out" and becomes
-  a policy backtest, which is what `synth/arms.py` is for. The consequence is
-  that upper-tail breaches are expected: real positions get topped up and outlive
-  every simulated path. **Judge calibration on the lower tail** — running out
-  earlier than P10 is the direction a planner is caught out by.
-
 ## Traps found the hard way
 
+- **A forward simulation can be wrong by 15x and every path still look sane.**
+  Two bugs in `montecarlo.py`, both invisible to inspection and both caught only
+  by the self-backtest in `simulate_risk.py`. Seeding the walk with `start_stock`
+  — the shelf when the spell *opened*, not today — handed each position back the
+  stock it had already sold. And counting `open_order_qty` as inbound on top of
+  in-transit double-counted goods that had already landed, because those orders
+  are the reason the spell started. Together: **4.3% predicted stockouts against
+  72% actual**. Never ship a simulation without a coverage check against realised
+  outcomes.
 - **A no-op lever is not a free lever.** In `prescribe.py`, units moved are
   capped at what the horizon needs. When a position already held more than that
   the cap hit zero, so the lever cost nothing and any simulation noise made it
@@ -296,15 +386,16 @@ injected defects) went with `run_validations.py`. The equivalent gate is now
   their cost was never incurred. Valuing at sticker price overstates every lever
   by roughly 1/margin and makes absurd freight look worthwhile — it had the
   engine acting on 81% of positions.
-- **A forward simulation can be wrong by 15x and every path still look sane.**
-  Two bugs in `montecarlo.py`, both invisible to inspection and both caught only
-  by the self-backtest in `simulate_risk.py`. Seeding the walk with `start_stock`
-  — the shelf when the spell *opened*, not today — handed each position back the
-  stock it had already sold. And counting `open_order_qty` as inbound on top of
-  in-transit double-counted goods that had already landed, because those orders
-  are the reason the spell started. Together: **4.3% predicted stockouts against
-  72% actual**. Never ship a simulation without a coverage check against realised
-  outcomes.
+- **A comparison arm can silently become a copy of itself.** In the simulator
+  endpoint, position overrides were applied before the baseline was copied, so
+  dragging a stock slider moved *both* arms. The page compared a scenario against
+  itself and looked perfectly plausible doing it.
+- **A diagnostic can find structure of the wrong shape and sound confident.**
+  `diagnose_dc_structure` hashed each store's whole column including its
+  missing-value pattern; stores carry different assortments, so every store
+  hashed uniquely and it reported one "DC" per store — a restatement of the
+  assortment dressed as a finding. It now compares stores only where both observe
+  the same SKU-day.
 - **Model metrics do not detect untracked inter-store transfers — they *improve*.**
   Injecting transfers cuts recorded stockouts 6.9% while raising C-index 0.697 →
   0.769. Only `accounting.stock_movement_sign` catches it; its residual *is* the
@@ -320,6 +411,23 @@ injected defects) went with `run_validations.py`. The equivalent gate is now
 - **Sample-data join rates of 0% are untested, not broken.** The nine sample files
   are disjoint slices (`product_dim` is all `dns=35`, inventory is `dns=14`), so
   cross-table SKU joins cannot match. Re-measure on a full extract.
+- **Recharts' `ResponsiveContainer` inflates its grid parent** and never shrinks
+  back, pushing the page past the viewport as soon as a chart renders. Charts are
+  wrapped in a `width: 0; min-width: 100%` box (`app/web/src/components/charts.tsx`).
 - Prefer running scripts over ad-hoc analysis: several results here (the bias
-  direction, the coefficient attenuation cause) contradicted the initial
-  hypothesis and were only settled by measuring.
+  direction, the coefficient attenuation cause, the feature ablation) contradicted
+  the initial hypothesis and were only settled by measuring.
+
+## Open items
+
+- **`inventory_turnover` reads ~31× annualised**, which is high even for fast
+  footwear. It is units sold ÷ average units held over 90 days and the synthetic
+  stores run deliberately thin. Sanity-check the definition against real figures
+  before presenting that tile.
+- **The prescription backtest scores the DECISION, not the saving.** Whether a
+  transfer would actually have prevented the stockout is unobservable without the
+  simulator executing transfers inside a policy arm. `prescribe.backtest_decisions`
+  reports precision/recall against realised stockouts and says so.
+- **Scenario comparison (named what-ifs, side by side) is not built.** The pieces
+  exist — `montecarlo.Uncertainty` is a plain dataclass and `synth/arms.py` runs
+  policy arms — but nothing stores or diffs named scenarios.
