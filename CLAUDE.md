@@ -44,6 +44,18 @@ experiment, which is the headline result.
 `reports/` is gitignored script output. `docs/model_report.md` embeds figures
 from it, so they render only after a local `fit_model.py` run.
 
+The web application:
+
+```bash
+cd app/web && npm install && npm run build && cd ../..
+uv run uvicorn app.api.main:app --port 8000     # ~50s warm-up, then in-memory
+```
+
+`app/api/state.py` resolves everything expensive once at startup — extract, AFT
+fit, scored population, prescriptions, descriptive rollups. Nothing recomputes
+per request; a per-request `prescribe.recommend` measured 3.4 s for a single SKU
+because it rescans the panel.
+
 ## Architecture
 
 Data flows in one direction and each stage has a single entry point:
@@ -95,10 +107,20 @@ backtest — starts measuring noise while still producing numbers.
 
 **2. Receipts are inferred, never read from order dates.**
 `replenishment_orders` records when an order was *placed*; goods land a lead time
-later and there is no goods-receipt date anywhere in the model.
+later and **the supplied extract has no goods-receipt date anywhere**.
 `spells.assemble_panel` derives `received` from consecutive-day stock rises.
 Using `Order_Date` as an arrival date splits spells on days nothing moved — it
 produced 296 spells against a true 255 with 29 wrong end reasons.
+
+*The synthetic extract now also emits `goods_receipts.csv` and
+`store_receipts.csv`* — the fields a well-instrumented business would record,
+added so supplier on-time performance is computable in the product instead of
+being a blank tile. **This does not change the rule.** `assemble_panel` still
+infers, because a real extract will not have these files and the inference is the
+path that has to keep working. The two are a useful cross-check rather than a
+replacement: measured on `dev`, observed store lead time is 5.72d ± 2.26 against
+5.66d ± 2.28 inferred, so the inference is sound. Where the UI shows a lead time
+it says which of the two it used.
 
 **3. Covariates cannot see the future (`model/features/`).** Every feature must
 be computable at spell start. Trailing demand sums days *strictly before*
@@ -221,7 +243,7 @@ events in the holdout, making ranking metrics undefined), `dev` (real runs),
 
 | Command | Expected |
 |---|---|
-| `pytest` | 263 passing |
+| `pytest` | 292 passing |
 | `fit_model.py` | KM bias +17d optimistic; AFT test C-index ~0.79 |
 | `rank_critical_skus.py --drivers` | `log_days_of_cover` is the top driver for most at-risk rows |
 | `diagnose_network.py` | store→DC catchments recovered; transfers hide ~1% of sales |

@@ -22,6 +22,11 @@ survival = [
 ]
 dev = [
     "pytest>=8.0",
+    "httpx>=0.27",          # FastAPI TestClient
+]
+api = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
 ]
 
 [build-system]
@@ -33,7 +38,8 @@ packages = ["src/stockout"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# "." so the `app` package (the web backend) imports; "src" for `stockout`.
+pythonpath = ["src", "."]
 filterwarnings = [
     # pandas 2.3 internals vs numpy 2.5; not raised by this package's own code.
     "ignore:The 'generic' unit for NumPy timedelta:DeprecationWarning",

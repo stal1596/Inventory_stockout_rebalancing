@@ -373,10 +373,17 @@ def simulate(
                 )
                 arrival_slot = (day + lead) % buffer_width
                 np.add.at(pipeline, (candidates, arrival_slot), quantity)
-                for pair, qty, current in zip(
-                    candidates, quantity, on_hand[candidates]
+                # The arrival day is recorded alongside the order so a goods
+                # receipt can be emitted. It is NOT fed back into spell building:
+                # `assemble_panel` keeps inferring receipts from stock movement,
+                # because a real extract has no receipt date and the inference is
+                # what must stay honest (invariant 2).
+                for pair, qty, current, lands in zip(
+                    candidates, quantity, on_hand[candidates], lead
                 ):
-                    replen_rows.append((day, int(pair), float(current), float(qty)))
+                    replen_rows.append(
+                        (day, int(pair), float(current), float(qty), day + int(lands))
+                    )
 
         # 7. vendor -> DC replenishment, and the DC's own daily position
         vendor_arrivals = dc_pipeline[:, :, day % vendor_buffer].copy()
@@ -498,10 +505,18 @@ def _assemble(
     )
 
     replenishment = pd.DataFrame(
-        replen_rows, columns=["day", "pair", "current_stock", "quantity"]
+        replen_rows,
+        columns=["day", "pair", "current_stock", "quantity", "arrival_day"],
     )
     if not replenishment.empty:
         replenishment["date"] = dates[replenishment["day"].to_numpy()]
+        # Arrivals can land after the window closes; those lines are simply not
+        # received within the observation period, which is the truth.
+        landed = replenishment["arrival_day"].to_numpy() < len(dates)
+        replenishment["received_date"] = pd.NaT
+        replenishment.loc[landed, "received_date"] = dates[
+            replenishment.loc[landed, "arrival_day"].to_numpy()
+        ]
         pairs_of_replen = replenishment["pair"].to_numpy()
         replenishment["storeid"] = store_ids[pair_store[pairs_of_replen]]
         # The REAL serving DC, not a hash of the store code.

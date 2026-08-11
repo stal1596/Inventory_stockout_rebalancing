@@ -44,6 +44,20 @@ uv run pytest
 `reports/` is gitignored script output; the figures in `docs/model_report.md`
 render after a local `fit_model.py` run.
 
+### The web application
+
+```bash
+uv sync --extra dev --extra survival --extra api
+cd app/web && npm install && npm run build && cd ../..
+uv run uvicorn app.api.main:app --host 127.0.0.1 --port 8000
+# open http://127.0.0.1:8000
+```
+
+One process serves the API and the built SPA. Startup loads the extract, fits the
+model and prescribes every open position once — about 50 seconds — after which
+requests are served from memory (KPIs ~17ms, a 10,000-path simulation ~40ms).
+For frontend work run `npm run dev` alongside it; Vite proxies `/api` to 8000.
+
 ## What is here
 
 | Path | Purpose |
@@ -63,6 +77,8 @@ render after a local `fit_model.py` run.
 | `src/stockout/model/attribution.py` | Exact AFT decomposition: which features cost this SKU how many days |
 | `src/stockout/model/montecarlo.py` | Forward simulation of the stockout date under demand, forecast and lead-time uncertainty |
 | `src/stockout/model/prescribe.py` | Rebalance / expedite-DC / expedite-supplier, valued against doing nothing |
+| `app/api/` | FastAPI backend over the package — loads and fits once, serves from memory |
+| `app/web/` | React control tower: descriptive → predictive → simulation → prescriptive |
 | `src/stockout/model/` | Estimators, evaluation, scoring, reorder policy, plots |
 | `reports/model/` | Figures and metric CSVs |
 | `sample_data/` | The supplied extract (9 CSVs, 93 rows) |
@@ -88,7 +104,7 @@ render after a local `fit_model.py` run.
 |---|---|
 | `fit_model.py` | KM bias +17d optimistic; AFT test C-index ~0.79 |
 | `diagnose_network.py` | store→DC catchments recovered from `warehouse_stock` |
-| `pytest` | 263 passing |
+| `pytest` | 292 passing |
 
 The validation suite was stripped to stock-accounting checks, so the former
 check-count expectations no longer apply. `tests/test_extract_contract.py` is

@@ -1,0 +1,143 @@
+@import "tailwindcss";
+
+/*
+  Palette is the validated reference instance from the dataviz skill, not chosen
+  by eye. The three categorical slots in use (blue / orange / aqua) were run
+  through scripts/validate_palette.js with --pairs all in both modes and pass
+  every gate: worst CVD deltaE 9.2 light / 9.4 dark, worst normal-vision 24.0 /
+  20.9.
+
+  One documented obligation: on the LIGHT surface aqua sits at 2.74:1, below the
+  3:1 bar. The relief rule applies, so every chart using it ships visible direct
+  labels and a table view alongside. That is why the risk table sits under the
+  charts rather than behind a tab.
+
+  Status colours are reserved for risk bands and never reused as a series, and
+  they always travel with a text label -- colour never carries the band alone.
+*/
+
+:root {
+  color-scheme: light;
+
+  --surface-1: #fcfcfb;      /* chart surface */
+  --surface-2: #f9f9f7;      /* page plane */
+  --surface-3: #f2f2ee;      /* raised / hover */
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.1);
+
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+
+  --seq-100: #cde2fb;
+  --seq-250: #86b6ef;
+  --seq-400: #3987e5;
+  --seq-550: #1c5cab;
+
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+  --success-text: #006300;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --surface-1: #1a1a19;
+  --surface-2: #0d0d0d;
+  --surface-3: #232322;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255, 255, 255, 0.1);
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+
+  --seq-100: #184f95;
+  --seq-250: #1c5cab;
+  --seq-400: #3987e5;
+  --seq-550: #86b6ef;
+
+  --success-text: #0ca30c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --surface-2: #0d0d0d;
+    --surface-3: #232322;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.1);
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --seq-100: #184f95;
+    --seq-250: #1c5cab;
+    --seq-550: #86b6ef;
+    --success-text: #0ca30c;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Columns that must align vertically get tabular figures; standalone hero
+   numbers keep proportional figures, per the type rule. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.hairline {
+  border-color: var(--border);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--axis);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Recharts leaves a focus ring on the surface wrapper; the marks carry their
+   own hover affordance so it is redundant noise. */
+.recharts-wrapper:focus,
+.recharts-surface:focus {
+  outline: none;
+}

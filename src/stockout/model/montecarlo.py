@@ -181,13 +181,20 @@ def simulate_paths(
     n_paths: int = DEFAULT_PATHS,
     seed: int = 20260811,
     start_weekday: int = 0,
-) -> np.ndarray:
+    trajectory_quantiles: tuple[float, ...] | None = None,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Day of first stockout per position per path; ``horizon + 1`` if it survives.
 
     Returns an ``(n_positions, n_paths)`` integer array. Looping over days rather
     than materialising a ``positions x paths x days`` cube keeps peak memory at
     the size of the state, which matters once this runs over thousands of open
     positions.
+
+    Pass ``trajectory_quantiles`` to also get the inventory fan -- an
+    ``(n_positions, n_quantiles, horizon + 1)`` array of stock levels. The
+    percentiles are reduced *inside* the day loop rather than by keeping every
+    path: retaining the full cube for 2,400 positions x 500 paths x 28 days would
+    cost ~270 MB to then throw almost all of it away.
     """
     rng = np.random.default_rng(seed)
     n = len(positions)
@@ -224,6 +231,12 @@ def simulate_paths(
 
     weekday_factor = np.asarray(uncertainty.weekday_factor, dtype=float)
 
+    fan = None
+    if trajectory_quantiles:
+        quantiles = np.asarray(trajectory_quantiles, dtype=float)
+        fan = np.zeros((n, len(quantiles), horizon + 1), dtype=np.float32)
+        fan[:, :, 0] = np.percentile(stock, quantiles * 100, axis=1).T
+
     for day in range(1, horizon + 1):
         landing = (arrival_day == day) & (committed > 0)
         stock = stock + np.where(landing, committed, 0.0)
@@ -242,6 +255,11 @@ def simulate_paths(
         still_in &= ~out_now
         stock = np.clip(stock, 0.0, None)
 
+        if fan is not None:
+            fan[:, :, day] = np.percentile(stock, quantiles * 100, axis=1).T
+
+    if fan is not None:
+        return first_out, fan
     return first_out
 
 

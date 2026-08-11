@@ -175,6 +175,33 @@ def attach_canonical_keys(
         frame["zone_norm"] = map_unique(frame["zone"], keys.normalise_zone)
         frame["date"] = parse_dates(frame["date"])
 
+    elif name == "goods_receipts":
+        # Vendor -> DC: no store dimension, by nature. Keyed on the SKU so
+        # supplier performance can be read per product.
+        frame = _attach_from_dns_item(frame)
+        frame["date"] = parse_dates(frame["Receipt_Date"])
+        frame["order_date"] = parse_dates(frame["Order_Date"])
+        frame["promised_date"] = parse_dates(frame["Promised_Date"])
+        frame["lead_days_actual"] = (frame["date"] - frame["order_date"]).dt.days
+        frame["lead_days_promised"] = (
+            frame["promised_date"] - frame["order_date"]
+        ).dt.days
+        # The number that does not exist in the supplied extract at all.
+        frame["days_late"] = (frame["date"] - frame["promised_date"]).dt.days
+        frame["on_time"] = frame["days_late"] <= 0
+
+    elif name == "store_receipts":
+        frame = _attach_store(frame, "Store_ID", known_stores)
+        frame = _attach_from_branded_sku(frame, "SKU", "Size")
+        frame["date"] = parse_dates(frame["Receipt_Date"])
+        frame["order_date"] = parse_dates(frame["Order_Date"])
+        frame["lead_days"] = (frame["date"] - frame["order_date"]).dt.days
+
+    elif name == "forecast_store_week":
+        frame = _attach_store(frame, "storeid", known_stores)
+        frame = _attach_from_dns_item(frame)
+        frame["date"] = parse_dates(frame["Week_Start"])
+
     elif name == "external_signals_fact":
         frame["city_norm"] = map_unique(frame["City"], keys.normalise_city)
         frame["brand_norm"] = map_unique(frame["Brand"], keys.normalise_text)

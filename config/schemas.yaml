@@ -278,6 +278,97 @@ tables:
       Name1:    {dtype: string, role: dim, required: false}
       Search_2: {dtype: string, role: dim, required: false}
 
+  # ---------------------------------------------------------------------
+  # Fields the supplied extract does not have, modelled by the generator.
+  # `required_for_survival` is deliberately absent on all three: the pipeline
+  # must keep working on an extract without them, which is the real-world case.
+  # ---------------------------------------------------------------------
+
+  goods_receipts:
+    file: goods_receipts.csv
+    description: >-
+      Vendor -> DC goods receipts. ABSENT from the supplied extract, which is why
+      supplier on-time performance cannot be computed there and why lead time has
+      to be inferred from stock movement. Receipt_Date is the ACTUAL arrival;
+      pending_orders.Delivery Date remains the promise.
+    grain: [Receipt_ID]
+    raw_grain: [Receipt_ID]
+    role: fact
+    date_columns: [Receipt_Date, Order_Date, Promised_Date]
+    columns:
+      Receipt_ID:    {dtype: string, role: key,     required: true}
+      Receipt_Date:  {dtype: date,   role: date,    required: true}
+      Warehouse_ID:  {dtype: string, role: dim,     required: true}
+      Vendor:        {dtype: string, role: dim,     required: true}
+      Vendor_Name:   {dtype: string, role: dim,     required: false}
+      SKU:           {dtype: string, role: key,     required: true}
+      dns_item:      {dtype: string, role: key,     required: true}
+      color:         {dtype: string, role: key,     required: true}
+      size:          {dtype: string, role: key,     required: true}
+      Qty_Received:  {dtype: float,  role: measure, required: true}
+      Order_Date:    {dtype: date,   role: date,    required: true}
+      Promised_Date: {dtype: date,   role: date,    required: true}
+    invariants:
+      - name: receipt_after_order
+        type: date_order
+        earlier: Order_Date
+        later: Receipt_Date
+        severity: error
+      - name: non_negative_receipt
+        type: non_negative
+        columns: [Qty_Received]
+        severity: error
+
+  store_receipts:
+    file: store_receipts.csv
+    description: >-
+      DC -> store arrivals. Makes store lead time OBSERVED; without this file
+      policy.infer_lead_times derives it from consecutive-day stock rises, and
+      that inference is what the model still uses by default.
+    grain: [Store_ID, SKU, Size, Receipt_Date]
+    raw_grain: [Store_ID, SKU, Size, Receipt_Date]
+    role: fact
+    date_columns: [Receipt_Date, Order_Date]
+    columns:
+      Receipt_Date: {dtype: date,   role: date,    required: true}
+      Order_Date:   {dtype: date,   role: date,    required: true}
+      Warehouse_ID: {dtype: string, role: dim,     required: true}
+      Store_ID:     {dtype: string, role: key,     required: true}
+      SKU:          {dtype: string, role: key,     required: true}
+      Size:         {dtype: string, role: key,     required: true}
+      Qty_Received: {dtype: float,  role: measure, required: true}
+    invariants:
+      - name: store_receipt_after_order
+        type: date_order
+        earlier: Order_Date
+        later: Receipt_Date
+        severity: error
+
+  forecast_store_week:
+    file: forecast_store_week.csv
+    description: >-
+      The national monthly forecast allocated to store x week by each store's
+      historical demand share. Sits ALONGSIDE forecast.csv rather than replacing
+      it: the coarse grain of the source plan is a real property and stays
+      visible.
+    grain: [storeid, dns_item, color, size, Week_Start]
+    raw_grain: [storeid, dns_item, color, size, Week_Start]
+    role: fact
+    date_columns: [Week_Start]
+    columns:
+      Week_Start:     {dtype: date,   role: date,    required: true}
+      storeid:        {dtype: string, role: key,     required: true}
+      dns_item:       {dtype: string, role: key,     required: true}
+      color:          {dtype: string, role: key,     required: true}
+      size:           {dtype: string, role: key,     required: true}
+      forecast_units: {dtype: float,  role: measure, required: true}
+      actual_units:   {dtype: float,  role: measure, required: true}
+    invariants:
+      - name: non_negative_store_forecast
+        type: non_negative
+        columns: [forecast_units, actual_units]
+        severity: error
+
   external_signals_fact:
     file: external_signals_fact.csv
     description: >-

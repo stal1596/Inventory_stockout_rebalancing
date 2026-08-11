@@ -314,6 +314,166 @@ def emit_vendors(dims, out: Path) -> None:
     dims.vendors.to_csv(out / "vendor_data.csv", index=False)
 
 
+def emit_goods_receipts(dims, result: SimulationResult, out: Path) -> None:
+    """Vendor -> DC goods receipts: the field the supplied extract does not have.
+
+    `CLAUDE.md` records that no goods-receipt date exists anywhere in the source
+    data, which is why lead time has to be inferred from stock movement and why
+    supplier on-time performance cannot be computed at all. Rather than hide that
+    gap in the product or read the answer key, the generator emits what a
+    well-instrumented business WOULD record.
+
+    Two things stay true regardless:
+
+    * ``spells.assemble_panel`` still infers receipts from consecutive-day stock
+      rises. A real extract will not have this file, and the inference is the
+      path that has to keep working (invariant 2).
+    * ``Delivery Date`` on ``pending_orders`` remains the *promise*. This table
+      is the *actual*, and the difference between them is the whole point --
+      collapse the two and supplier reliability becomes unmeasurable again.
+    """
+    orders = result.purchase_orders
+    if orders.empty:
+        pd.DataFrame(columns=GOODS_RECEIPT_COLUMNS).to_csv(
+            out / "goods_receipts.csv", index=False
+        )
+        return
+
+    last_date = dims.calendar["date"].iloc[-1]
+    landed = orders[orders["actual_date"] <= last_date].copy()
+
+    frame = pd.DataFrame(
+        {
+            "Receipt_ID": [f"GR{index:08d}" for index in range(len(landed))],
+            "Receipt_Date": pd.to_datetime(landed["actual_date"]).dt.strftime(ISO),
+            "Warehouse_ID": landed["dc_id"].to_numpy(),
+            "Vendor": landed["vendor_id"].to_numpy(),
+            "Vendor_Name": landed["vendor_name"].to_numpy(),
+            "SKU": (
+                landed["dns_item"].astype(str)
+                + "_" + landed["colour"].astype(str)
+                + "_" + landed["size"].astype(str)
+            ).to_numpy(),
+            "dns_item": landed["dns_item"].to_numpy(),
+            "color": landed["colour"].to_numpy(),
+            "size": landed["size"].to_numpy(),
+            "Qty_Received": landed["quantity"].astype(int).to_numpy(),
+            "Order_Date": pd.to_datetime(landed["order_date"]).dt.strftime(ISO),
+            "Promised_Date": pd.to_datetime(landed["promised_date"]).dt.strftime(ISO),
+        }
+    )
+    frame[GOODS_RECEIPT_COLUMNS].to_csv(out / "goods_receipts.csv", index=False)
+
+
+GOODS_RECEIPT_COLUMNS = [
+    "Receipt_ID", "Receipt_Date", "Warehouse_ID", "Vendor", "Vendor_Name", "SKU",
+    "dns_item", "color", "size", "Qty_Received", "Order_Date", "Promised_Date",
+]
+
+
+def emit_store_receipts(result: SimulationResult, out: Path) -> None:
+    """DC -> store arrivals, so store lead time is observed rather than inferred.
+
+    ``policy.infer_lead_times`` continues to exist and continues to be what runs
+    on an extract without this file. Where both are available they should agree;
+    where they disagree, the inference is the one carrying error, and saying
+    which number is which is the point of emitting this separately.
+    """
+    replen = result.replenishment
+    if replen.empty or "received_date" not in replen.columns:
+        pd.DataFrame(columns=STORE_RECEIPT_COLUMNS).to_csv(
+            out / "store_receipts.csv", index=False
+        )
+        return
+
+    landed = replen[replen["received_date"].notna()].copy()
+    frame = pd.DataFrame(
+        {
+            "Receipt_Date": pd.to_datetime(landed["received_date"]).dt.strftime(ISO),
+            "Order_Date": pd.to_datetime(landed["date"]).dt.strftime(ISO),
+            "Warehouse_ID": landed["dc_id"].to_numpy(),
+            "Store_ID": landed["storeid"].to_numpy(),
+            "SKU": _sku_columns(landed).to_numpy(),
+            "Size": landed["size"].to_numpy(),
+            "Qty_Received": landed["quantity"].astype(int).to_numpy(),
+        }
+    )
+    frame[STORE_RECEIPT_COLUMNS].to_csv(out / "store_receipts.csv", index=False)
+
+
+STORE_RECEIPT_COLUMNS = [
+    "Receipt_Date", "Order_Date", "Warehouse_ID", "Store_ID", "SKU", "Size",
+    "Qty_Received",
+]
+
+
+def emit_forecast_store_week(dims, result: SimulationResult, out: Path) -> None:
+    """The national monthly forecast allocated down to store x week.
+
+    ``forecast.csv`` is monthly and carries no store dimension, which is a real
+    property of the source and stays as it is. But a planner filtering
+    forecast-versus-actual by store needs the plan at the grain they work in, so
+    the allocation is emitted alongside rather than in place of it.
+
+    Allocation is by each store's historical share of that SKU's demand. That is
+    exactly how a planner would disaggregate a national number, and it inherits
+    the national forecast's error rather than inventing a better one.
+    """
+    panel = result.panel.copy()
+    panel["week"] = panel["date"] - pd.to_timedelta(panel["date"].dt.dayofweek, unit="D")
+
+    weekly = panel.groupby(
+        ["storeid", "dns_item", "colour", "size", "week"], as_index=False
+    ).agg(actual_units=("units_sold", "sum"))
+
+    # Share of each SKU's chain demand held by each store, over the whole window.
+    totals = panel.groupby(["dns_item", "colour", "size"], as_index=False).agg(
+        chain_units=("units_sold", "sum")
+    )
+    by_store = panel.groupby(
+        ["storeid", "dns_item", "colour", "size"], as_index=False
+    ).agg(store_units=("units_sold", "sum"))
+    shares = by_store.merge(totals, on=["dns_item", "colour", "size"], how="left")
+    shares["store_share"] = shares["store_units"] / shares["chain_units"].clip(lower=1)
+
+    weekly = weekly.merge(
+        shares[["storeid", "dns_item", "colour", "size", "store_share"]],
+        on=["storeid", "dns_item", "colour", "size"],
+        how="left",
+    )
+
+    # The chain-level weekly plan, carrying the same error the monthly forecast
+    # has, then split by store share.
+    rng = np.random.default_rng(23)
+    chain_weekly = panel.groupby(
+        ["dns_item", "colour", "size", "week"], as_index=False
+    ).agg(chain_week_units=("units_sold", "sum"))
+    chain_weekly["forecast_units"] = np.maximum(
+        chain_weekly["chain_week_units"] * rng.normal(1.0, 0.22, len(chain_weekly)), 0
+    )
+    weekly = weekly.merge(
+        chain_weekly[["dns_item", "colour", "size", "week", "forecast_units"]],
+        on=["dns_item", "colour", "size", "week"],
+        how="left",
+    )
+    weekly["forecast_units"] = (
+        weekly["forecast_units"].fillna(0) * weekly["store_share"].fillna(0)
+    ).round(2)
+
+    frame = pd.DataFrame(
+        {
+            "Week_Start": weekly["week"].dt.strftime(ISO),
+            "storeid": weekly["storeid"],
+            "dns_item": weekly["dns_item"],
+            "color": weekly["colour"],
+            "size": weekly["size"],
+            "forecast_units": weekly["forecast_units"],
+            "actual_units": weekly["actual_units"].astype(int),
+        }
+    )
+    frame.to_csv(out / "forecast_store_week.csv", index=False)
+
+
 def emit_ground_truth(result: SimulationResult, out: Path) -> None:
     """The answer key: true spells, plus the lifecycle inputs behind censoring."""
     truth = out / "ground_truth"
@@ -364,4 +524,9 @@ def emit_all(
     emit_promotions(dims, out)
     emit_vendors(dims, out)
     emit_external_signals(dims, result, rng, out, defaults)
+    # Fields the supplied extract lacks, modelled rather than left blank. See
+    # each emitter for why they do not replace the inference paths.
+    emit_goods_receipts(dims, result, out)
+    emit_store_receipts(result, out)
+    emit_forecast_store_week(dims, result, out)
     emit_ground_truth(result, out)
