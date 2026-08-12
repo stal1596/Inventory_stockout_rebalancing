@@ -195,11 +195,19 @@ def reorder_points(
         "positions_below_reorder_point": n_below,
         "rows": records(page, ROW_COLUMNS),
         "verdict": VERDICT,
+        # The two estimators define the protection window differently, so the
+        # caveat has to follow the estimator rather than assert one of them.
         "caveat": (
             "Protection is the inferred lead time PLUS its standard deviation: "
             "safety stock is more sensitive to lead-time spread than to its mean, "
             "and the lead time here is inferred from stock rises because the "
             "extract carries no goods-receipt date."
+            if estimator == LEAD_TIME_DEMAND
+            else
+            "Protection is the inferred lead-time MEAN only -- this estimator "
+            "does not widen for lead-time spread, which is one reason it "
+            "under-buffers. The lead time is inferred from stock rises because "
+            "the extract carries no goods-receipt date."
         ),
     }
 

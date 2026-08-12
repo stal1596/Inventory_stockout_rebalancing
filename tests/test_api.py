@@ -716,3 +716,34 @@ def test_policy_export_carries_its_own_provenance(client):
 def test_validation_export_matches_the_json(client):
     rows = _csv_rows(client.get("/api/export/validation.csv"))
     assert len(rows) == client.get("/api/data/validation").json()["n_checks"]
+
+
+# --------------------------------------------------------------------------
+# serialisation: the honest "not enough data" answer must not be a 500
+# --------------------------------------------------------------------------
+
+def test_degenerate_backtest_scores_serialise_as_null():
+    """NaN is not JSON, and Starlette raises on it rather than emitting null.
+
+    `backtest_decisions` returns NaN for precision/recall when nothing was acted
+    on, and for stockout_rate_when_not when everything was -- both legitimate
+    outcomes. Rounding them and handing them to the encoder turned "not enough
+    data to say" into an unexplained 500.
+    """
+    import pandas as pd
+    from starlette.responses import JSONResponse
+
+    from stockout.model import prescribe as engine
+
+    recommendations = pd.DataFrame(
+        {"store_id": ["A"], "sku_uid": ["K"], "recommended_action": [engine.DO_NOTHING]}
+    )
+    truth = pd.DataFrame(
+        {"store_id": ["A"], "sku_uid": ["K"], "actual_days_to_stockout": [3.0]}
+    )
+    scored = engine.backtest_decisions(recommendations, truth)
+    assert scored["precision"] != scored["precision"], "expected a NaN to test"
+
+    payload = {key: app_state.jsonable(value) for key, value in scored.items()}
+    assert payload["precision"] is None
+    JSONResponse(payload).render(payload)   # raises if a NaN survived

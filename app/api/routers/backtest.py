@@ -22,7 +22,7 @@ import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.routers.prescribe import build_recommendations
-from app.api.state import AppState, get_state
+from app.api.state import AppState, get_state, jsonable
 from stockout.model import montecarlo as mc
 from stockout.model import prescribe as engine
 from stockout.model.backtest import actual_outcomes, backtestable_as_of, panel_end
@@ -86,8 +86,9 @@ def simulation(
             "horizon": horizon,
             "n_paths": n_paths,
             "n_positions": int(len(summary)),
-            **{k: (round(v, 4) if isinstance(v, float) else v)
-               for k, v in scored.items()},
+            # See the note in `decisions`: a non-finite score must serialise as
+            # null, not raise.
+            **{k: jsonable(v) for k, v in scored.items()},
             "expected": {
                 "coverage_p10_p90": 0.80,
                 "breach_below_p10": 0.10,
@@ -136,10 +137,18 @@ def decisions(
             "horizon": horizon,
             "n_paths": n_paths,
             "n_scored": int(len(result)),
-            **{k: (round(v, 4) if isinstance(v, float) else v)
-               for k, v in scored.items()},
+            # Through `jsonable`, not round(): `backtest_decisions` returns NaN
+            # for precision/recall when nothing was acted on, and for
+            # stockout_rate_when_not when everything was. `round(nan, 4)` is
+            # still NaN, and Starlette's encoder raises ValueError on it -- so
+            # the honest "not enough data" case answered 500.
+            **{k: jsonable(v) for k, v in scored.items()},
+            # Key matches the prescribe feed, so one component can render both.
             "mix": [
-                {"action": row["recommended_action"], "positions": int(row["positions"])}
+                {
+                    "recommended_action": row["recommended_action"],
+                    "positions": int(row["positions"]),
+                }
                 for _, row in engine.summarise(result).iterrows()
             ],
             "note": (

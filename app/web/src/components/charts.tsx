@@ -14,7 +14,7 @@ import { days, featureLabel, num, pct } from "../lib/format";
  * it a definite basis to measure against, so it fills the column and cannot
  * grow it.
  */
-function ChartBox({ children }: { children: ReactNode }) {
+export function ChartBox({ children }: { children: ReactNode }) {
   return (
     <div className="overflow-hidden" style={{ width: 0, minWidth: "100%" }}>
       {children}
@@ -27,7 +27,7 @@ const GRID = "var(--grid)";
 
 /** Shared tooltip shell. An HTML chart is interactive by default, so every
  *  chart here ships a hover layer rather than treating it as an extra. */
-function TipShell({ title, rows }: { title: string; rows: [string, string, string?][] }) {
+export function TipShell({ title, rows }: { title: string; rows: [string, string, string?][] }) {
   return (
     <div className="rounded-lg px-3 py-2 text-[12px] shadow-lg"
          style={{ background: "var(--surface-1)", border: "1px solid var(--border)" }}>
@@ -284,6 +284,45 @@ export function TrendChart({ data, height = 240 }: {
               dot={false} isAnimationActive={false} name="On hand" />
         <Line type="monotone" dataKey="units_sold" stroke="var(--series-2)" strokeWidth={2}
               dot={false} isAnimationActive={false} name="Sold" />
+      </LineChart>
+    </ResponsiveContainer>
+    </ChartBox>
+  );
+}
+
+/**
+ * The supply side of the same panel: what landed in stores, and what the DCs
+ * were holding behind them.
+ *
+ * A separate chart rather than two more lines on `TrendChart`, for a reason the
+ * palette forces: only three categorical slots are validated, so a fourth series
+ * would introduce an unchecked pair. Two charts of two series each reuse the one
+ * validated pair and stay readable.
+ */
+export function SupplyChart({ data, height = 230 }: {
+  data: { date: string; received: number; dc_stock: number }[]; height?: number;
+}) {
+  return (
+    <ChartBox>
+    <ResponsiveContainer width="100%" height={height}>
+      <LineChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: -10 }}>
+        <CartesianGrid stroke={GRID} vertical={false} />
+        <XAxis dataKey="date" tick={AXIS} tickLine={false} axisLine={{ stroke: "var(--axis)" }}
+               minTickGap={48} tickFormatter={(v) => String(v).slice(5)} />
+        <YAxis tick={AXIS} tickLine={false} axisLine={false} width={56} />
+        <Tooltip cursor={{ stroke: "var(--axis)" }}
+                 content={({ active, payload, label }) =>
+                   active && payload?.length ? (
+                     <TipShell title={String(label)}
+                               rows={[
+                                 ["Units received", num(payload[0]?.payload.received), "var(--series-1)"],
+                                 ["DC stock", num(payload[0]?.payload.dc_stock), "var(--series-2)"],
+                               ]} />
+                   ) : null } />
+        <Line type="monotone" dataKey="received" stroke="var(--series-1)" strokeWidth={2}
+              dot={false} isAnimationActive={false} name="Received" />
+        <Line type="monotone" dataKey="dc_stock" stroke="var(--series-2)" strokeWidth={2}
+              dot={false} isAnimationActive={false} name="DC stock" />
       </LineChart>
     </ResponsiveContainer>
     </ChartBox>

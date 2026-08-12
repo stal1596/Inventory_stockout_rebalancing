@@ -72,6 +72,10 @@
   --success-text: #0ca30c;
 }
 
+/* The no-attribute case: the user has chosen "system", so the OS decides.
+   This must set exactly the same tokens as the explicit dark block above --
+   `--text-muted` and `--seq-400` were missing, which was invisible only because
+   index.html used to hard-code data-theme and this block could never apply. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
@@ -80,6 +84,7 @@
     --surface-3: #232322;
     --text-primary: #ffffff;
     --text-secondary: #c3c2b7;
+    --text-muted: #898781;
     --grid: #2c2c2a;
     --axis: #383835;
     --border: rgba(255, 255, 255, 0.1);
@@ -89,6 +94,7 @@
     --series-4: #c98500;
     --seq-100: #184f95;
     --seq-250: #1c5cab;
+    --seq-400: #3987e5;
     --seq-550: #86b6ef;
     --success-text: #0ca30c;
   }

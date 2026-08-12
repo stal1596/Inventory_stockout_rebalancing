@@ -1,12 +1,30 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Control Tower — Inventory Intelligence</title>
     <meta name="description" content="Descriptive to prescriptive supply-chain intelligence over a survival model." />
-    <script type="module" crossorigin src="/assets/index-Ct3Qx_Fw.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-DLexDbKO.css">
+    <!--
+      Applied before first paint, or a light-mode user sees a dark flash on every
+      load. No attribute at all means "system", which is what lets the
+      prefers-color-scheme block in index.css actually take effect -- it never
+      could while this element hard-coded data-theme="dark".
+    -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("control-tower-theme");
+          if (stored === "light" || stored === "dark") {
+            document.documentElement.setAttribute("data-theme", stored);
+          }
+        } catch (e) {
+          /* private mode: fall back to the system preference */
+        }
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-D1Gu-50w.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-CbGGLeCj.css">
   </head>
   <body>
     <div id="root"></div>

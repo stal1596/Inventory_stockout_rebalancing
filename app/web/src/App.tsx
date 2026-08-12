@@ -1,16 +1,36 @@
 import { useEffect, useState } from "react";
-import { Route, Routes } from "react-router-dom";
+import { Link, Route, Routes } from "react-router-dom";
 import { Shell } from "./components/Shell";
 import { StoreProvider } from "./store";
 import { ControlTower } from "./pages/ControlTower";
 import { Risk } from "./pages/Risk";
 import { Simulate } from "./pages/Simulate";
 import { Prescribe } from "./pages/Prescribe";
+import { Policy } from "./pages/Policy";
 import { Inventory } from "./pages/Inventory";
 import { Network } from "./pages/Network";
 import { Data } from "./pages/Data";
+import { Evidence } from "./pages/Evidence";
+import { Quality } from "./pages/Quality";
+import { Backtests } from "./pages/Backtests";
 import { api } from "./lib/api";
-import { Spinner } from "./components/ui";
+import { Card, Empty, Spinner } from "./components/ui";
+
+function NotFound() {
+  return (
+    <Card title="Page not found">
+      <Empty>
+        <div className="text-center">
+          <p>There is no page at this address.</p>
+          <Link to="/" className="inline-block mt-3 rounded-md px-3 py-1.5 text-[13px]"
+                style={{ background: "var(--series-1)", color: "#fff" }}>
+            Back to the Control Tower
+          </Link>
+        </div>
+      </Empty>
+    </Card>
+  );
+}
 
 export function App() {
   const [health, setHealth] = useState<{ as_of?: string; c_index?: number } | null>(null);
@@ -72,9 +92,15 @@ export function App() {
           <Route path="/risk" element={<Risk />} />
           <Route path="/simulate" element={<Simulate />} />
           <Route path="/prescribe" element={<Prescribe />} />
+          <Route path="/policy" element={<Policy />} />
           <Route path="/network" element={<Network />} />
           <Route path="/data" element={<Data />} />
-          <Route path="*" element={<ControlTower />} />
+          <Route path="/evidence" element={<Evidence />} />
+          <Route path="/quality" element={<Quality />} />
+          <Route path="/backtests" element={<Backtests />} />
+          {/* A mistyped URL used to render the dashboard, which made it
+              indistinguishable from the homepage. */}
+          <Route path="*" element={<NotFound />} />
         </Routes>
       </Shell>
     </StoreProvider>

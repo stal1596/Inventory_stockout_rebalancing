@@ -25,6 +25,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from app.api.state import jsonable
 from stockout.model import estimators as est
 from stockout.model.dataset import spells_from_dataset
 from stockout.model.evaluate import brier_score, calibration_table, compare_models
@@ -68,8 +69,14 @@ def evaluation(state) -> dict:
             state.data.test,
             state.data.features,
         )
+        # `calibration_max_gap` is NaN when the bin table comes back empty, and
+        # Starlette's encoder raises on a non-finite float. `to_dict` alone would
+        # let that reach the wire as a 500.
         return {
-            "models": frame.to_dict("records"),
+            "models": [
+                {key: jsonable(value) for key, value in row.items()}
+                for row in frame.to_dict("records")
+            ],
             "primary": "LogNormal AFT",
             "split_date": str(state.data.split_date)[:10],
             "note": (
@@ -97,10 +104,15 @@ def calibration(state, horizon: float, bins: int) -> dict:
         )
         return {
             "horizon": horizon,
-            "bins": table.to_dict("records"),
-            "max_gap": float(table["gap"].abs().max()) if not table.empty else None,
-            "brier": brier_score(
-                state.model, state.data.test, state.data.features, horizon
+            "bins": [
+                {key: jsonable(value) for key, value in row.items()}
+                for row in table.to_dict("records")
+            ],
+            "max_gap": jsonable(
+                float(table["gap"].abs().max()) if not table.empty else None
+            ),
+            "brier": jsonable(
+                brier_score(state.model, state.data.test, state.data.features, horizon)
             ),
             "n_test": int(len(state.data.test)),
             "note": (

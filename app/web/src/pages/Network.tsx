@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { money, num, pct } from "../lib/format";
 import { api } from "../lib/api";
-import { Card, Note, Spinner, Table } from "../components/ui";
+import { Card, ErrorState, Note, Spinner, Table } from "../components/ui";
+import { useApi } from "../lib/useApi";
 
 /**
  * Supplier → DC → store, drawn from config/network.yaml rather than hard-coded,
@@ -11,13 +12,16 @@ import { Card, Note, Spinner, Table } from "../components/ui";
  * an edge's presence carries the serving relationship. No decorative geometry.
  */
 export function Network() {
-  const [topology, setTopology] = useState<any>(null);
+  const state = useApi(() => api.topology(), []);
 
-  useEffect(() => { api.topology().then(setTopology).catch(() => {}); }, []);
-  if (!topology) return <Spinner label="Resolving the network…" />;
+  if (state.error) return <ErrorState message={state.error} onRetry={state.refetch} />;
+  if (!state.data) return <Spinner label="Resolving the network…" />;
 
+  const topology = state.data;
   const { vendors, dcs, stores } = topology;
-  const maxExposure = Math.max(...stores.map((s: any) => s.exposure), 1);
+  // reduce, not Math.max(...spread): a full extract has thousands of stores and
+  // spreading them as arguments is an engine limit waiting to be hit.
+  const maxExposure = stores.reduce((most, s) => Math.max(most, s.exposure), 1);
 
   return (
     <div className="flex flex-col gap-5">
@@ -55,8 +59,11 @@ export function Network() {
 
           <Column title="Stores">
             <div className="grid grid-cols-2 gap-2">
-              {stores.map((store: any) => (
+              {stores.map((store) => (
+                // A node carrying a store id and an at-risk count that cannot be
+                // opened is a dead end. Each one now filters the risk table.
                 <Node key={store.id} title={store.id}
+                      to={`/risk?at=${encodeURIComponent(store.id)}`}
                       lines={[
                         `${store.city} · ${store.dc ?? "—"}`,
                         `${store.at_risk} of ${store.positions} at risk`,
@@ -129,12 +136,26 @@ function Column({ title, children }: { title: string; children: React.ReactNode 
   );
 }
 
-function Node({ title, lines, tone, meter, meterLabel }: {
-  title: string; lines: string[]; tone: string; meter?: number; meterLabel?: string;
+function Node({ title, lines, tone, meter, meterLabel, to }: {
+  title: string; lines: string[]; tone: string;
+  meter?: number; meterLabel?: string; to?: string;
 }) {
+  const Wrapper = to
+    ? ({ children }: { children: React.ReactNode }) => (
+        <Link to={to} className="block rounded-md px-2.5 py-2 transition-colors hover:brightness-125"
+              style={{ background: "var(--surface-3)", borderLeft: `3px solid ${tone}` }}>
+          {children}
+        </Link>
+      )
+    : ({ children }: { children: React.ReactNode }) => (
+        <div className="rounded-md px-2.5 py-2"
+             style={{ background: "var(--surface-3)", borderLeft: `3px solid ${tone}` }}>
+          {children}
+        </div>
+      );
+
   return (
-    <div className="rounded-md px-2.5 py-2"
-         style={{ background: "var(--surface-3)", borderLeft: `3px solid ${tone}` }}>
+    <Wrapper>
       <p className="text-[12px] font-medium truncate" title={title}>{title}</p>
       {lines.map((line, index) => (
         <p key={index} className="text-[10.5px] leading-snug" style={{ color: "var(--text-muted)" }}>
@@ -152,7 +173,7 @@ function Node({ title, lines, tone, meter, meterLabel }: {
           </p>
         </div>
       )}
-    </div>
+    </Wrapper>
   );
 }
 

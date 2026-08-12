@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, type Simulation } from "../lib/api";
+import { api } from "../lib/api";
 import { bandColor, days, money, num, pct } from "../lib/format";
-import { Card, Delta, Empty, Note, Spinner } from "../components/ui";
+import { Card, Delta, Empty, ErrorState, Note, Spinner } from "../components/ui";
 import { FanChart, ProbabilityCurve, StockoutHistogram } from "../components/charts";
+import { PopulationPanel } from "../components/PopulationPanel";
+import { useApi, useDebounced } from "../lib/useApi";
 import { useStore } from "../store";
 
 interface Knobs {
@@ -20,43 +22,86 @@ interface Knobs {
 export function Simulate() {
   const { selection, focus } = useStore();
   const navigate = useNavigate();
-  const [result, setResult] = useState<Simulation | null>(null);
   const [knobs, setKnobs] = useState<Knobs>({ horizon: 42, n_paths: 4000 });
-  const [busy, setBusy] = useState(false);
   const [touched, setTouched] = useState(false);
-  const request = useRef(0);
+  const [mode, setMode] = useState<"position" | "population">("position");
 
   // Reset the knobs when the position changes, or a slider set for one SKU
   // silently applies to the next.
   useEffect(() => { setKnobs({ horizon: 42, n_paths: 4000 }); setTouched(false); }, [selection?.skuUid, selection?.storeId]);
 
-  useEffect(() => {
-    if (!selection) return;
-    const id = ++request.current;
-    setBusy(true);
-    api.simulate({ store_id: selection.storeId, sku_uid: selection.skuUid, ...knobs })
-      .then((r) => { if (id === request.current) setResult(r); })
-      .catch(() => {})
-      .finally(() => { if (id === request.current) setBusy(false); });
-  }, [selection, knobs]);
+  // One POST used to fire per `onChange` of a range input, at up to 20,000
+  // paths. Debouncing the knobs rather than the request keeps the position the
+  // user actually stopped on.
+  const settled = useDebounced(knobs, 250);
+  const simulation = useApi(
+    () =>
+      selection
+        ? api.simulate({ store_id: selection.storeId, sku_uid: selection.skuUid, ...settled })
+        : Promise.resolve(null),
+    [selection?.storeId, selection?.skuUid, JSON.stringify(settled)],
+  );
+  const result = simulation.data;
+  const busy = simulation.loading || settled !== knobs;
 
-  if (!selection) {
+  const modeSwitch = (
+    <div className="flex items-center gap-1 rounded-md p-0.5 w-fit"
+         style={{ background: "var(--surface-3)" }}>
+      {(["position", "population"] as const).map((option) => (
+        <button key={option} onClick={() => setMode(option)}
+                aria-pressed={mode === option}
+                className="rounded px-3 py-1.5 text-[13px] transition-colors"
+                style={{ background: mode === option ? "var(--surface-1)" : "transparent",
+                         color: mode === option ? "var(--text-primary)" : "var(--text-secondary)",
+                         fontWeight: mode === option ? 600 : 450 }}>
+          {option === "position" ? "One position" : "Whole book"}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (mode === "population") {
     return (
-      <Card title="Monte Carlo simulation">
-        <Empty>
-          <div className="text-center">
-            <p>Pick a position on the Stockout Risk page to simulate it.</p>
-            <button onClick={() => navigate("/risk")}
-                    className="mt-3 rounded-md px-3 py-1.5 text-[13px]"
-                    style={{ background: "var(--series-1)", color: "#fff" }}>
-              Go to Stockout Risk
-            </button>
-          </div>
-        </Empty>
-      </Card>
+      <div className="flex flex-col gap-5">
+        {modeSwitch}
+        <PopulationPanel />
+      </div>
     );
   }
 
+  if (!selection) {
+    return (
+      <div className="flex flex-col gap-5">
+        {modeSwitch}
+        <Card title="Monte Carlo simulation">
+          <Empty>
+            <div className="text-center">
+              <p>Pick a position on the Stockout Risk page to simulate it.</p>
+              <p className="mt-1 text-[12px]">
+                Or switch to <strong>Whole book</strong> to simulate a slice of the population.
+              </p>
+              <button onClick={() => navigate("/risk")}
+                      className="mt-3 rounded-md px-3 py-1.5 text-[13px]"
+                      style={{ background: "var(--series-1)", color: "#fff" }}>
+                Go to Stockout Risk
+              </button>
+            </div>
+          </Empty>
+        </Card>
+      </div>
+    );
+  }
+
+  // An error clears the result rather than leaving the previous numbers on
+  // screen under changed sliders -- the failure mode that let a user read
+  // results which did not correspond to the visible inputs.
+  if (simulation.error) {
+    return (
+      <Card title="Monte Carlo simulation">
+        <ErrorState message={simulation.error} onRetry={simulation.refetch} />
+      </Card>
+    );
+  }
   if (!result) return <Spinner label="Running simulations…" />;
 
   const set = (patch: Partial<Knobs>) => { setTouched(true); setKnobs({ ...knobs, ...patch }); };
@@ -66,6 +111,7 @@ export function Simulate() {
 
   return (
     <div className="flex flex-col gap-5">
+      {modeSwitch}
       <div className="grid grid-cols-1 xl:grid-cols-[300px_minmax(0,1fr)] gap-5 items-start">
         <div className="flex flex-col gap-5 xl:sticky xl:top-[76px]">
           <Card title="Assumptions"

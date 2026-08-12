@@ -57,6 +57,18 @@ app/api/                FastAPI over the engine; state.py holds the warm cache
                         filters (one definition of "which positions"),
                         evidence, diagnostics
 app/web/                React + Vite + Tailwind control tower
+  lib/useApi.ts         one fetch, three states (data/error/loading) + debounce.
+                        A failed refetch CLEARS the data -- leaving stale numbers
+                        under changed sliders is worse than a blank panel.
+  store.tsx             selection + filters, held in the URL so a view is
+                        shareable and survives a reload. `focus()` carries the
+                        filters ON the navigation: writing them to the current
+                        URL and then navigating drops them.
+  pages/                ControlTower · Inventory · Risk · Simulate · Prescribe ·
+                        Policy · Network · Data · Evidence · Quality · Backtests
+  components/charts-evidence.tsx
+                        calibration · KM-bias · CIF partition · coefficients ·
+                        tail coverage · discrimination
 config/                 schemas.yaml · synth_profiles.yaml · network.yaml
 docs/baselines/         metrics captured at each build step, for attribution
 scripts/                one entry point per stage
@@ -67,7 +79,7 @@ scripts/                one entry point per stage
 ```bash
 uv sync --extra dev --extra survival --extra api
 
-uv run pytest                            # 335 tests, ~125s
+uv run pytest                            # 336 tests, ~130s
 uv run pytest tests/test_spells.py -q -p no:warnings
 uv run pytest tests/test_estimators.py::test_naive_km_overstates_survival -q
 ```
@@ -353,6 +365,13 @@ resolved object.
   The cover coefficient moving 0.425 → 0.601 against a physics-implied 1.0 is the
   real result — that is the demand estimate improving, which has always been the
   main lever here.
+- **The reorder-point screen must keep saying so.** `/policy` is the one surface
+  that could quietly walk back the "do not invert the model" verdict. The
+  validated lead-time-demand estimator is the default; choosing model inversion
+  returns `validated: false` and paints a NOT VALIDATED banner carrying the
+  measured +59% lost units at −13% inventory. The two estimators also define the
+  protection window differently — lead-time mean **plus its sd** versus the mean
+  alone — so the caveat follows the estimator instead of asserting one of them.
 - **Charts follow the `dataviz` skill, and the palette is validated, not chosen.**
   The three categorical slots in use pass `--pairs all` in both modes (worst CVD
   ΔE 9.2 light / 9.4 dark). Light-mode aqua sits at 2.74:1, below the 3:1 bar, so
@@ -363,7 +382,7 @@ resolved object.
 
 | Command | Expected |
 |---|---|
-| `pytest` | 335 passing |
+| `pytest` | 336 passing |
 | `fit_model.py` | KM bias +17d optimistic; AFT test C-index ~0.79 |
 | `rank_critical_skus.py --drivers` | `log_days_of_cover` is the top driver for most at-risk rows |
 | `diagnose_network.py` | store→DC catchments recovered; transfers hide ~1% of sales |

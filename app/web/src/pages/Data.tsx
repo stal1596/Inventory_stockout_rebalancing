@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { num } from "../lib/format";
-import { Card, Note, Spinner, Table } from "../components/ui";
+import { Card, ErrorState, Note, Spinner, Table } from "../components/ui";
+import { useApi } from "../lib/useApi";
 
 /**
  * The page that keeps the demo honest.
@@ -12,13 +12,14 @@ import { Card, Note, Spinner, Table } from "../components/ui";
  * this page exists to prevent, so the gap is stated rather than smoothed over.
  */
 export function Data() {
-  const [provenance, setProvenance] = useState<any>(null);
+  const state = useApi(() => api.provenance(), []);
 
-  useEffect(() => { api.provenance().then(setProvenance).catch(() => {}); }, []);
-  if (!provenance) return <Spinner label="Reading the data contract…" />;
+  if (state.error) return <ErrorState message={state.error} onRetry={state.refetch} />;
+  if (!state.data) return <Spinner label="Reading the data contract…" />;
 
-  const missing = provenance.tables.filter((t: any) => !t.in_supplied_extract);
-  const present = provenance.tables.filter((t: any) => t.in_supplied_extract);
+  const provenance = state.data;
+  const missing = provenance.tables.filter((t) => !t.in_supplied_extract);
+  const present = provenance.tables.filter((t) => t.in_supplied_extract);
 
   return (
     <div className="flex flex-col gap-5">

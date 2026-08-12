@@ -60,11 +60,15 @@ def competing_risks(state: AppState = Depends(get_state)) -> dict:
 def coefficients(state: AppState = Depends(get_state)) -> dict:
     """The fitted AFT, in full.
 
-    Two coefficients are documented traps and are flagged as non-actionable
-    rather than quietly listed beside the rest: ``store_stockout_rate_90d`` is a
-    store fixed effect with no lever behind it, and ``intransit_units`` carries a
-    NEGATIVE coefficient because stock is in transit *because* the position is
-    thin -- read causally it says "cancel the shipment".
+    ``actionable`` comes from ``attribution.NON_ACTIONABLE``, which holds the six
+    features no planner has a lever for -- ``store_stockout_rate_90d`` among them,
+    a store fixed effect with no lever behind it.
+
+    ``intransit_units`` is deliberately NOT in that set and still needs its own
+    warning, which is why it is flagged separately here: it carries a NEGATIVE
+    coefficient because stock is in transit *because* the position is thin. It is
+    a real lever, so marking it non-actionable would be wrong; read causally it
+    says "cancel the shipment", which is the opposite of what it means.
     """
     coefs = attribution.aft_coefficients(state.model, state.data.features)
     groups = {
@@ -73,12 +77,22 @@ def coefficients(state: AppState = Depends(get_state)) -> dict:
         for name in names
     }
 
+    # Associational traps that are actionable but whose SIGN misleads. Kept
+    # separate from NON_ACTIONABLE, which means "no lever exists".
+    READ_WITH_CARE = {
+        "intransit_units": (
+            "Negative because stock is in transit BECAUSE the position is thin. "
+            "Read causally it says 'cancel the shipment'."
+        ),
+    }
+
     rows = [
         {
             "feature": name,
             "coefficient": jsonable(value),
             "group": groups.get(name, "encoded"),
             "actionable": name not in attribution.NON_ACTIONABLE,
+            "caution": READ_WITH_CARE.get(name),
             "reference_mean": jsonable(state.reference.get(name)),
         }
         for name, value in coefs.items()

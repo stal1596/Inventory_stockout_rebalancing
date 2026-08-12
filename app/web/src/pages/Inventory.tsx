@@ -1,20 +1,19 @@
-import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { days, money, num, pct } from "../lib/format";
-import { Card, Empty, Kpi, Note, Spinner, Table } from "../components/ui";
-import { DistributionChart, ForecastChart, TrendChart } from "../components/charts";
+import { Card, Empty, ErrorState, Kpi, Note, Spinner, Table } from "../components/ui";
+import { useApi } from "../lib/useApi";
+import { Link } from "react-router-dom";
+import { DistributionChart, ForecastChart, SupplyChart, TrendChart } from "../components/charts";
 
 export function Inventory() {
-  const [summary, setSummary] = useState<any>(null);
-  const [trend, setTrend] = useState<any[]>([]);
+  const state = useApi(() => api.inventory(), []);
+  const trendState = useApi(() => api.trend(180), []);
+  const trend = trendState.data?.series ?? [];
 
-  useEffect(() => {
-    api.inventory().then(setSummary).catch(() => {});
-    api.trend(180).then((t) => setTrend(t.series)).catch(() => {});
-  }, []);
+  if (state.error) return <ErrorState message={state.error} onRetry={state.refetch} />;
+  if (!state.data) return <Spinner label="Aggregating the panel…" />;
 
-  if (!summary) return <Spinner label="Aggregating the panel…" />;
-
+  const summary = state.data;
   const supplier = summary.supplier;
   const lead = summary.lead_time;
   const forecast = summary.forecast;
@@ -47,6 +46,26 @@ export function Inventory() {
             Units sold
           </span>
         </div>
+      </Card>
+
+      <Card title="Supply into the network" subtitle="Goods received, and the DC depth behind them">
+        <SupplyChart data={trend} height={200} />
+        <div className="flex items-center gap-4 mt-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
+          <span className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-sm" style={{ background: "var(--series-1)" }} />
+            Units received
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-sm" style={{ background: "var(--series-2)" }} />
+            DC stock
+          </span>
+        </div>
+        <Note>
+          Both series arrive with the demand panel and were previously fetched
+          and discarded. Receipts are INFERRED from consecutive-day stock rises,
+          not read from order dates — the extract records when an order was
+          placed, never when it landed.
+        </Note>
       </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -140,8 +159,8 @@ export function Inventory() {
       </div>
 
       <Card title="Inventory by store" subtitle="Where the stock and the excess sit">
-        <Table head={["Store", "SKUs", "On hand", "Excess units", "Excess share"]}>
-          {summary.by_store.map((store: any) => (
+        <Table head={["Store", "SKUs", "On hand", "Excess units", "Excess share", ""]}>
+          {summary.by_store.map((store) => (
             <tr key={store.store_id} style={{ borderBottom: "1px solid var(--border)" }}>
               <td className="py-2 pr-4 font-medium">{store.store_id}</td>
               <td className="py-2 pr-4">{num(store.skus)}</td>
@@ -149,6 +168,14 @@ export function Inventory() {
               <td className="py-2 pr-4">{num(store.excess, 1)}</td>
               <td className="py-2 pr-4" style={{ color: "var(--text-secondary)" }}>
                 {pct(store.on_hand ? store.excess / store.on_hand : 0)}
+              </td>
+              {/* The row already knows the store; without this it was a dead end. */}
+              <td className="py-2 pr-4">
+                <Link to={`/risk?at=${encodeURIComponent(store.store_id)}`}
+                      className="text-[12px] underline underline-offset-2"
+                      style={{ color: "var(--series-1)" }}>
+                  risk →
+                </Link>
               </td>
             </tr>
           ))}
