@@ -12,10 +12,7 @@ sorted by row count puts the wrong one first.
 
 from __future__ import annotations
 
-import numpy as np
-import pandas as pd
-
-from app.api.services import bands
+from app.api.services import bands, filters
 
 SEVERITY_ORDER = {"critical": 0, "warning": 1, "info": 2}
 
@@ -85,9 +82,12 @@ def build(state) -> list[dict]:
 
     # --- coverage shortfall ---------------------------------------------
     # Committed supply that will not cover demand before it lands.
+    #
+    # Computed through the same helper the drill-through uses. This alert links
+    # to `risk?coverage=short`, so a second implementation here would let the
+    # headline count disagree with the table it opens.
     if "intransit_units" in scored.columns:
-        need = scored["trailing_demand_rate"] * 14 - scored["start_stock"]
-        short = scored[(need > 0) & (scored["intransit_units"].fillna(0) < need)]
+        short = filters.apply(scored, coverage="short")
         critical_short = short[short["risk_band"].isin([bands.CRITICAL, bands.HIGH])]
         if not critical_short.empty:
             out.append(

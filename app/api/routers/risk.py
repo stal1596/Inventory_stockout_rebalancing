@@ -8,11 +8,10 @@ is linear on the log-time scale.
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.api.services import bands
+from app.api.services import bands, filters
 from app.api.state import AppState, get_state, jsonable, records
 from stockout.model import attribution
 
@@ -41,26 +40,11 @@ def positions(
     offset: int = 0,
     state: AppState = Depends(get_state),
 ) -> dict:
-    frame = state.scored
-
-    if band:
-        frame = frame[frame["risk_band"] == band]
-    if store_id:
-        frame = frame[frame["store_id"] == store_id]
-    if category and "category" in frame.columns:
-        frame = frame[frame["category"] == category]
-    column = f"p_stockout_{horizon}d"
-    if min_probability > 0 and column in frame.columns:
-        frame = frame[frame[column] >= min_probability]
-    if coverage == "short" and "intransit_units" in frame.columns:
-        need = frame["trailing_demand_rate"] * 14 - frame["start_stock"]
-        frame = frame[(need > 0) & (frame["intransit_units"].fillna(0) < need)]
-    if search:
-        needle = search.strip().upper()
-        frame = frame[
-            frame["sku_uid"].str.upper().str.contains(needle, na=False)
-            | frame["store_id"].str.upper().str.contains(needle, na=False)
-        ]
+    frame = filters.apply(
+        state.scored,
+        band=band, store_id=store_id, category=category, horizon=horizon,
+        min_probability=min_probability, coverage=coverage, search=search,
+    )
 
     total = len(frame)
     exposure = float(frame["expected_lost_revenue"].sum()) if total else 0.0

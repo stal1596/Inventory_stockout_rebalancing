@@ -104,7 +104,7 @@ For frontend work run `npm run dev` alongside it; Vite proxies `/api` to 8000.
 |---|---|
 | `fit_model.py` | KM bias +17d optimistic; AFT test C-index ~0.79 |
 | `diagnose_network.py` | store→DC catchments recovered from `warehouse_stock` |
-| `pytest` | 292 passing |
+| `pytest` | 335 passing |
 
 The validation suite was stripped to stock-accounting checks, so the former
 check-count expectations no longer apply. `tests/test_extract_contract.py` is

@@ -47,8 +47,15 @@ src/stockout/           the engine — pure library, no web dependencies
     prescribe.py        three levers, valued against doing nothing
     policy.py           reorder points from lead-time demand
     network.py          DC-structure recovery, unexplained-movement measurement
+    backtest.py         realised outcomes from the panel: the truth both the
+                        Monte Carlo and the prescription backtests score against
 
 app/api/                FastAPI over the engine; state.py holds the warm cache
+  routers/              risk · simulate · prescribe · policy · evidence ·
+                        quality · backtest · exports · overview · catalog
+  services/             shaping the routers share: aggregates, alerts, bands,
+                        filters (one definition of "which positions"),
+                        evidence, diagnostics
 app/web/                React + Vite + Tailwind control tower
 config/                 schemas.yaml · synth_profiles.yaml · network.yaml
 docs/baselines/         metrics captured at each build step, for attribution
@@ -60,7 +67,7 @@ scripts/                one entry point per stage
 ```bash
 uv sync --extra dev --extra survival --extra api
 
-uv run pytest                            # 292 tests, ~115s
+uv run pytest                            # 335 tests, ~125s
 uv run pytest tests/test_spells.py -q -p no:warnings
 uv run pytest tests/test_estimators.py::test_naive_km_overstates_survival -q
 ```
@@ -127,11 +134,22 @@ Validation reads `raw`; everything else reads `canon`.
 
 **The web layer computes nothing per request.** `app/api/state.py` resolves the
 extract, the AFT fit, the scored population, every prescription and the
-descriptive rollups once at startup (~50 s), and serves slices thereafter. This
+descriptive rollups once at startup (~45 s), and serves slices thereafter. This
 is not premature optimisation: a per-request `prescribe.recommend` measured
 **3.4 s for a single SKU** because it rescans the 525k-row panel to find today's
 stock and the donor pool. Precomputing also means the recommendation list and the
 per-SKU detail are literally the same rows, so they cannot drift apart.
+
+**Evidence derivations are lazily cached, not precomputed.** The accounting run
+(10.6 s), the KM-bias measurement (8.3 s), reorder points per service level
+(4.0 s) and the backtests each back one page, so they go through
+`AppState.cached` — the first caller pays, everyone after is served from memory,
+and a restart clears it. Adding them to `build_state` would put a data audit
+nobody asked for in front of every developer restart. The builder runs *outside*
+the cache lock on purpose: a 10-second derivation must not block
+`/api/overview/kpis`. Cache keys must be quantised (`round(x, 3)`) and bounded by
+the router's `Query`/`Field` limits, or the LRU degenerates into a memory leak
+with a 32-entry lid.
 
 **The validation suite was stripped to `accounting.py`.** Two consequences worth
 knowing before you trust an extract:
@@ -240,6 +258,14 @@ Without this the same SKU read *"16 on hand, 7.1 days cover"* on one page and
 other number on the screen. `tests/test_api.py` asserts the three surfaces agree,
 and that cover is consistent with the stock and rate shown beside it.
 
+Three traps when adding a surface. `montecarlo.build_positions` **overwrites**
+`start_stock` with today's shelf — the value is right and the *name* is the trap,
+so rename it on the way out; `state.recommendations` carries the same. And
+`score.REPORT_COLUMNS` holds `start_stock`/`days_of_cover` and neither resolved
+column: it is the right shape for the CLI report and the wrong shape for a
+download that sits beside the risk table, so `app/api/routers/exports.py` builds
+from `risk.TABLE_COLUMNS` through the same `records()` call the JSON uses.
+
 ## Configuration contracts
 
 **`config/schemas.yaml`** drives loading and validation. Column names are the raw
@@ -337,7 +363,7 @@ resolved object.
 
 | Command | Expected |
 |---|---|
-| `pytest` | 292 passing |
+| `pytest` | 335 passing |
 | `fit_model.py` | KM bias +17d optimistic; AFT test C-index ~0.79 |
 | `rank_critical_skus.py --drivers` | `log_days_of_cover` is the top driver for most at-risk rows |
 | `diagnose_network.py` | store→DC catchments recovered; transfers hide ~1% of sales |

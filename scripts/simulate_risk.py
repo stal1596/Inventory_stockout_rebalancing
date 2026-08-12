@@ -23,36 +23,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from stockout.io import load_config, load_dataset  # noqa: E402
 from stockout.model import estimators as est  # noqa: E402
 from stockout.model import montecarlo as mc  # noqa: E402
+from stockout.model.backtest import actual_outcomes, panel_end  # noqa: E402
 from stockout.model.dataset import prepare  # noqa: E402
 from stockout.model.score import conditional_risk, open_spells_at  # noqa: E402
-from stockout.spells import assemble_panel  # noqa: E402
 
 warnings.filterwarnings("ignore")
-
-
-def actual_outcomes(dataset, positions: pd.DataFrame, as_of, horizon: int) -> pd.DataFrame:
-    """Days from ``as_of`` until each position first hit zero, from the panel.
-
-    Positions still in stock at the end of the window get NaN rather than the
-    horizon: "did not stock out within 28 days" is not the same observation as
-    "stocked out on day 28", and averaging them together would flatter the model.
-    """
-    panel = assemble_panel(
-        dataset.table("inventory_daily"),
-        dataset.table("sales_pos"),
-        dataset.table("replenishment_orders"),
-    )
-    window = panel[
-        (panel["date"] > as_of) & (panel["date"] <= as_of + pd.Timedelta(days=horizon))
-    ]
-    empty = window[window["store_stock"] <= 0]
-    first = empty.groupby(["store_id", "sku_uid"], as_index=False)["date"].min()
-    first["actual_days_to_stockout"] = (first["date"] - as_of).dt.days
-    return positions[["store_id", "sku_uid"]].merge(
-        first[["store_id", "sku_uid", "actual_days_to_stockout"]],
-        on=["store_id", "sku_uid"],
-        how="left",
-    )
 
 
 def main() -> int:
@@ -118,7 +93,7 @@ def main() -> int:
               f"{both.corr(method='spearman').iloc[0, 1]:.3f}")
 
     # ---- self-backtest ---------------------------------------------------
-    last_date = dataset.table("inventory_daily")["date"].max()
+    last_date = panel_end(dataset)
     if last_date >= as_of + pd.Timedelta(days=args.horizon):
         truth = actual_outcomes(dataset, summary, as_of, args.horizon)
         scored = mc.score_against_truth(summary, truth, args.horizon)

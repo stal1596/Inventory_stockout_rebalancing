@@ -19,7 +19,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routers import catalog, overview, prescribe, risk, simulate
+from app.api.routers import (
+    backtest,
+    catalog,
+    evidence,
+    exports,
+    overview,
+    policy,
+    prescribe,
+    quality,
+    risk,
+    simulate,
+)
 from app.api.state import get_state
 
 logging.basicConfig(
@@ -58,8 +69,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Order matters only against the SPA catch-all below, which must stay last or an
+# unmatched /api path would be served index.html instead of a 404.
 for router in (overview.router, risk.router, simulate.router, prescribe.router,
-               catalog.router):
+               catalog.router, evidence.router, quality.router, policy.router,
+               backtest.router, exports.router):
     app.include_router(router)
 
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -32,13 +33,19 @@ from stockout.model import attribution
 from stockout.model import estimators as est
 from stockout.model import montecarlo as mc
 from stockout.model.dataset import ModelingData, prepare
-from stockout.model.score import conditional_risk, rank_critical_skus, open_spells_at
+from stockout.model.score import rank_critical_skus, open_spells_at
 from stockout.synth.network import Network, load_network
 
 log = logging.getLogger("controltower")
 
 DATA_ROOT = Path("data/synthetic")
 SCORING_HORIZONS = (7, 14, 28)
+
+# Bound on the lazy derivation cache. Every parameterised key is quantised and
+# range-limited by the router's Query/Field bounds, so the reachable key space is
+# small; this is the backstop against a caller walking a float through a thousand
+# values and pinning several hundred MB of frames in memory.
+DERIVED_CACHE_LIMIT = 32
 
 
 @dataclass
@@ -62,12 +69,59 @@ class AppState:
     # disagreeing -- and re-running the engine per request cost 3.4 s because it
     # rescans the 525k-row panel for one position.
     recommendations: pd.DataFrame = field(default_factory=pd.DataFrame)
+    # Expensive derivations that only one page opens -- the 10.6 s accounting
+    # run, the 8.3 s KM-bias measurement, reorder points per service level. None
+    # of them belongs in the boot path: cold start is paid by every restart and
+    # every deploy, while these are paid by whoever asks.
+    derived: "OrderedDict[tuple, object]" = field(default_factory=OrderedDict)
+    _derived_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def position(self, store_id: str, sku_uid: str) -> pd.Series | None:
         match = self.scored[
             (self.scored["store_id"] == store_id) & (self.scored["sku_uid"] == sku_uid)
         ]
         return None if match.empty else match.iloc[0]
+
+    def cached(self, key: tuple, builder):
+        """Compute an expensive derivation once, on FIRST REQUEST -- not at boot.
+
+        Three properties that matter more than the LRU itself:
+
+        **The builder runs OUTSIDE the lock.** A 10.6-second ``accounting.run``
+        holding a shared lock would stall ``/api/overview/kpis`` behind it. Two
+        callers arriving cold together may therefore both build, and the second
+        result wins; that is strictly cheaper than serialising every reader
+        behind the slowest writer, and these builders are pure functions of
+        immutable state, so the two results are identical anyway.
+
+        **Keys must be quantised.** Round every float to 3 dp before it reaches
+        this method and bound it with ``Query(ge=, le=)`` -- otherwise the key
+        space is continuous and the cache degenerates into a memory leak with a
+        32-entry lid.
+
+        **Cached objects are immutable by convention.** Routers filter with
+        ``frame[mask]`` or ``.copy()`` before touching a returned frame. Nothing
+        enforces this; mutating a cached frame corrupts every later request.
+        """
+        hit = self.derived.get(key)
+        if hit is not None:
+            with self._derived_lock:
+                # Another thread may have evicted this key between the read and
+                # the lock; `move_to_end` would raise rather than merely miss.
+                if key in self.derived:
+                    self.derived.move_to_end(key)
+            return hit
+
+        started = time.time()
+        value = builder()
+        log.info("derived %s in %.2fs", key[0], time.time() - started)
+
+        with self._derived_lock:
+            self.derived[key] = value
+            self.derived.move_to_end(key)
+            while len(self.derived) > DERIVED_CACHE_LIMIT:
+                self.derived.popitem(last=False)
+        return value
 
 
 _state: AppState | None = None
@@ -122,7 +176,12 @@ def build_state(root: str | Path = DATA_ROOT) -> AppState:
 
     from app.api.routers.prescribe import build_recommendations
 
-    recommendations = build_recommendations(dataset, network, scored)
+    # Pass the calibration we already paid for. Without it `engine.recommend`
+    # calls `mc.calibrate(dataset)` again -- measured 7.81s -> 4.96s for this
+    # step alone.
+    recommendations = build_recommendations(
+        dataset, network, scored, uncertainty=uncertainty
+    )
     log.info("prescribed %s positions", len(recommendations))
 
     elapsed = time.time() - started

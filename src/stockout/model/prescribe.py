@@ -323,11 +323,19 @@ def recommend(
     seed: int = 20260811,
     uncertainty: mc.Uncertainty | None = None,
     margin_rate: float = DEFAULT_MARGIN_RATE,
+    costs: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     """Best action per position, or none.
 
     Returns one row per position with the chosen lever, what it saves, what it
     costs, and why the alternatives lost.
+
+    ``costs`` overrides freight per unit for any subset of the three levers. It
+    exists because "what if freight were 5x dearer" is the question that decides
+    whether a lever is real, and the answer must come from re-running the
+    valuation rather than from scaling the output: the choice between levers is
+    an argmax, so a cost change can flip which one wins, not merely shrink the
+    margin on the one that already did.
     """
     uncertainty = uncertainty or mc.calibrate(dataset)
     positions = mc.build_positions(scored, dataset)
@@ -349,21 +357,31 @@ def recommend(
     price = positions.get("avg_price", pd.Series(1.0, index=positions.index))
     price = pd.Series(price).fillna(pd.Series(price).median()).to_numpy()
 
+    # Resolve freight once. The rebalance default comes from the network config
+    # (transfers.cost_per_unit) rather than DEFAULT_COSTS, so that a network edit
+    # keeps flowing through; an explicit override beats both.
+    unit_costs = {
+        REBALANCE: levers.transfer_cost,
+        EXPEDITE_DC: DEFAULT_COSTS[EXPEDITE_DC],
+        EXPEDITE_SUPPLIER: DEFAULT_COSTS[EXPEDITE_SUPPLIER],
+        **{k: float(v) for k, v in (costs or {}).items() if v is not None},
+    }
+
     candidates = {
         REBALANCE: (
             feasible["rebalance_units"].to_numpy(),
             np.full(len(feasible), levers.transfer_lead_days),
-            np.full(len(feasible), levers.transfer_cost),
+            np.full(len(feasible), unit_costs[REBALANCE]),
         ),
         EXPEDITE_DC: (
             feasible["dc_available"].to_numpy(),
             feasible["expedite_dc_days"].to_numpy(),
-            np.array([DEFAULT_COSTS[EXPEDITE_DC]] * len(feasible)),
+            np.array([unit_costs[EXPEDITE_DC]] * len(feasible)),
         ),
         EXPEDITE_SUPPLIER: (
             feasible["supplier_available"].to_numpy(),
             feasible["expedite_supplier_days"].to_numpy(),
-            np.array([DEFAULT_COSTS[EXPEDITE_SUPPLIER]] * len(feasible)),
+            np.array([unit_costs[EXPEDITE_SUPPLIER]] * len(feasible)),
         ),
     }
 

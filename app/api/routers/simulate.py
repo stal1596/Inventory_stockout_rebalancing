@@ -16,7 +16,8 @@ import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.api.state import AppState, get_state
+from app.api.services import filters
+from app.api.state import AppState, get_state, records
 from stockout.model import montecarlo as mc
 
 router = APIRouter(prefix="/api/simulate", tags=["simulate"])
@@ -24,13 +25,14 @@ router = APIRouter(prefix="/api/simulate", tags=["simulate"])
 QUANTILES = (0.1, 0.5, 0.9)
 
 
-class Assumptions(BaseModel):
-    """Slider positions. Any omitted field keeps its calibrated value."""
+class UncertaintySliders(BaseModel):
+    """The five fields of ``montecarlo.Uncertainty`` a user may override.
 
-    store_id: str
-    sku_uid: str
-    horizon: int = Field(42, ge=7, le=120)
-    n_paths: int = Field(4000, ge=200, le=20000)
+    Shared by the single-position and population endpoints so the bounds are
+    declared once. ``n_lead_observations`` and ``weekday_factor`` are deliberately
+    absent: the first is a count of evidence, not an assumption, and the second is
+    a seven-element measured shape with no sensible slider.
+    """
 
     forecast_bias: float | None = Field(None, ge=0.2, le=3.0)
     forecast_sigma: float | None = Field(None, ge=0.0, le=1.5)
@@ -38,12 +40,21 @@ class Assumptions(BaseModel):
     lead_mean: float | None = Field(None, ge=0.0, le=60.0)
     lead_sigma: float | None = Field(None, ge=0.0, le=30.0)
 
+
+class Assumptions(UncertaintySliders):
+    """Slider positions for one position. Omitted fields keep calibrated values."""
+
+    store_id: str
+    sku_uid: str
+    horizon: int = Field(42, ge=7, le=120)
+    n_paths: int = Field(4000, ge=200, le=20000)
+
     start_stock: float | None = Field(None, ge=0)
     committed_units: float | None = Field(None, ge=0)
     demand_rate: float | None = Field(None, ge=0)
 
 
-def _uncertainty(state: AppState, body: Assumptions) -> mc.Uncertainty:
+def _uncertainty(state: AppState, body: UncertaintySliders) -> mc.Uncertainty:
     base = state.uncertainty
     return mc.Uncertainty(
         forecast_bias=body.forecast_bias if body.forecast_bias is not None else base.forecast_bias,
@@ -189,6 +200,130 @@ def simulate_position(body: Assumptions, state: AppState = Depends(get_state)) -
                 "Sliders show the effect of departing from what the data says."
             ),
         },
+    }
+
+
+class PopulationAssumptions(UncertaintySliders):
+    """Slider positions applied to a whole slice of the population."""
+
+    band: str | None = None
+    store_id: str | None = None
+    category: str | None = None
+    search: str | None = None
+    min_probability: float = Field(0.0, ge=0.0, le=1.0)
+    coverage: str | None = None
+
+    limit: int = Field(200, ge=1, le=500)
+    horizon: int = Field(28, ge=7, le=90)
+    n_paths: int = Field(500, ge=100, le=2000)
+
+
+# Each path walks one position for one day, so cost is the product of the three
+# knobs. This ceiling lands around two seconds, which is the most a request
+# should spend while a user waits on a slider.
+PATH_DAY_BUDGET = 2e7
+
+POPULATION_ROW_COLUMNS = [
+    "store_id", "sku_uid", "stock_on_hand", "committed_units",
+    "trailing_demand_rate", "mc_p_stockout",
+    "mc_days_to_stockout_p10", "mc_days_to_stockout_p50", "mc_days_to_stockout_p90",
+    "mc_expected_days_out", "expected_unmet_units",
+]
+
+
+@router.post("/population")
+def simulate_population(
+    body: PopulationAssumptions, state: AppState = Depends(get_state)
+) -> dict:
+    """Run the forward simulation over a filtered slice, not one position.
+
+    The single-position endpoint answers "when does THIS run out". This answers
+    "how much of the book is exposed, and when" -- which is the question a
+    planner actually opens the page with, and which previously required running
+    ``simulate_risk.py`` from a terminal.
+    """
+    budget = body.limit * body.n_paths * body.horizon
+    if budget > PATH_DAY_BUDGET:
+        raise HTTPException(
+            422,
+            f"{body.limit} positions x {body.n_paths} paths x {body.horizon} days "
+            f"is {budget:,.0f} path-days, over the {PATH_DAY_BUDGET:,.0f} limit. "
+            f"Reduce limit (worst offender), n_paths, or horizon.",
+        )
+
+    frame = filters.apply(
+        state.scored,
+        band=body.band, store_id=body.store_id, category=body.category,
+        min_probability=body.min_probability, coverage=body.coverage,
+        search=body.search,
+    )
+    frame = filters.latest_position(frame)
+    frame = frame.sort_values("expected_lost_revenue", ascending=False).head(body.limit)
+    if frame.empty:
+        raise HTTPException(404, "No open positions match those filters.")
+
+    # Pass the calibrated uncertainty explicitly. `mc.run` otherwise recalibrates
+    # from the dataset, which costs 3.4 s to rediscover what state already holds.
+    summary, uncertainty = mc.run(
+        frame,
+        state.dataset,
+        horizon=body.horizon,
+        n_paths=body.n_paths,
+        uncertainty=_uncertainty(state, body),
+    )
+
+    # `build_positions` resolves today's shelf but keeps the column name
+    # `start_stock`. Report it as what it is, or this page contradicts every
+    # other one.
+    rate = summary["trailing_demand_rate"].to_numpy()
+    summary = summary.rename(columns={"start_stock": "stock_on_hand"})
+    summary["expected_unmet_units"] = (
+        summary["mc_expected_days_out"].to_numpy() * rate
+    ).round(1)
+
+    # `summarise_paths` emits a cumulative column only for 7/14/28, and only for
+    # those inside the horizon.
+    paths_out = summary["mc_p_stockout"].to_numpy()
+    by_day = [
+        {"day": day, "share": round(float(summary[f"mc_p_stockout_{day}d"].mean()), 4)}
+        for day in (7, 14, 28)
+        if f"mc_p_stockout_{day}d" in summary.columns
+    ]
+
+    return {
+        "as_of": state.as_of.strftime("%Y-%m-%d"),
+        "horizon": body.horizon,
+        "paths": body.n_paths,
+        "positions": int(len(summary)),
+        "aggregate": {
+            "p_stockout_mean": round(float(paths_out.mean()), 4),
+            "positions_likely_out": int((paths_out >= 0.5).sum()),
+            "expected_days_out_mean": round(
+                float(summary["mc_expected_days_out"].mean()), 2
+            ),
+            "expected_unmet_units": round(
+                float(summary["expected_unmet_units"].sum()), 1
+            ),
+            "by_horizon": by_day,
+        },
+        "rows": records(
+            summary.sort_values("mc_p_stockout", ascending=False),
+            POPULATION_ROW_COLUMNS,
+        ),
+        "calibration": {
+            "forecast_bias": round(uncertainty.forecast_bias, 3),
+            "forecast_sigma": round(uncertainty.forecast_sigma, 3),
+            "dispersion": round(uncertainty.dispersion, 3),
+            "lead_mean": round(uncertainty.lead_mean, 2),
+            "lead_sigma": round(uncertainty.lead_sigma, 2),
+            "summary": uncertainty.summary(),
+        },
+        "note": (
+            "Future replenishment orders are deliberately excluded -- only supply "
+            "already in transit counts. Model the orders a policy WOULD place and "
+            "this stops being 'when does the book run out' and becomes a policy "
+            "backtest. So this is unmitigated exposure, not a forecast."
+        ),
     }
 
 

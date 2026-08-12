@@ -175,6 +175,10 @@ def lead_time_distribution(dataset: Dataset) -> dict:
             "n": int(inferred["n"]),
             "mean": round(float(inferred["mean"]), 2) if inferred["n"] else None,
             "std": round(float(inferred["std"]), 2) if inferred["n"] else None,
+            # The reorder-point endpoint protects against lead-time SPREAD, not
+            # its mean, so it needs the tail. Served from the same object the
+            # inventory page reads, so the two cannot quote different numbers.
+            "p95": round(float(inferred["p95"]), 2) if inferred["n"] else None,
         },
         "histogram": histogram,
         "note": (

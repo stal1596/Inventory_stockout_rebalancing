@@ -12,9 +12,9 @@ import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Depends
 
+from app.api.services.diagnostics import dc_structure
 from app.api.state import AppState, get_state, records
 from stockout.io import load_config
-from stockout.model.network import diagnose_dc_structure
 
 router = APIRouter(prefix="/api", tags=["catalog"])
 
@@ -143,7 +143,10 @@ def topology(state: AppState = Depends(get_state)) -> dict:
         "dcs": dc_nodes,
         "stores": store_nodes,
         "transfers": network.transfers,
-        "recovered": diagnose_dc_structure(state.dataset).get("verdict", ""),
+        # Read from the shared cache rather than recomputing: this cost 0.94s on
+        # every topology request, and /api/data/dc-structure must not be able to
+        # report a different verdict than the one drawn on this page.
+        "recovered": dc_structure(state).get("verdict", ""),
     }
 
 

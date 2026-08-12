@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from stockout.io import load_config, load_dataset  # noqa: E402
 from stockout.model import estimators as est  # noqa: E402
 from stockout.model import prescribe  # noqa: E402
+from stockout.model.backtest import actual_outcomes, panel_end  # noqa: E402
 from stockout.model.dataset import prepare  # noqa: E402
 from stockout.model.score import conditional_risk, open_spells_at  # noqa: E402
 from stockout.synth.network import load_network  # noqa: E402
@@ -113,10 +114,8 @@ def main() -> int:
           f"{recommendations.loc[acted, 'expected_margin_protected'].sum():,.0f}")
 
     # ---- did the decision discriminate? ---------------------------------
-    last_date = dataset.table("inventory_daily")["date"].max()
+    last_date = panel_end(dataset)
     if last_date >= as_of + pd.Timedelta(days=args.horizon):
-        from simulate_risk import actual_outcomes
-
         truth = actual_outcomes(dataset, recommendations, as_of, args.horizon)
         scored = prescribe.backtest_decisions(recommendations, truth)
         print("\n=== Did the 'act' decision hit the real stockouts? ===")
