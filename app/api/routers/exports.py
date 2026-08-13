@@ -54,13 +54,14 @@ def risk_csv(
     store_id: str | None = None,
     category: str | None = None,
     horizon: int = 14,
-    min_probability: float = 0.0,
+    min_probability: float = Query(0.0, ge=0.0, le=1.0),
     coverage: str | None = None,
     search: str | None = None,
-    limit: int = Query(20000, le=50000),
+    limit: int = Query(20000, ge=1, le=50000),
     state: AppState = Depends(get_state),
 ) -> Response:
     """The risk table, exactly as shown, for the current filters."""
+    filters.validate_horizon(horizon)
     frame = filters.apply(
         state.scored,
         band=band, store_id=store_id, category=category, horizon=horizon,
@@ -75,7 +76,7 @@ def risk_csv(
 def prescriptions_csv(
     action: str | None = None,
     store_id: str | None = None,
-    limit: int = Query(20000, le=50000),
+    limit: int = Query(20000, ge=1, le=50000),
     state: AppState = Depends(get_state),
 ) -> Response:
     """The standing recommendations, with today's shelf beside each one."""

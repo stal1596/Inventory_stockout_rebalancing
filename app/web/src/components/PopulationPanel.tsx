@@ -12,8 +12,23 @@ import { useStore } from "../store";
  * opens the page with, and which previously needed a terminal.
  *
  * The budget guard is server-side and returns which knob to reduce, so its
- * message is rendered rather than replaced with a generic failure.
+ * message is rendered rather than replaced with a generic failure. It is also
+ * mirrored here — see PATH_DAY_BUDGET.
  */
+
+/**
+ * `PATH_DAY_BUDGET` in `app/api/routers/simulate.py`.
+ *
+ * Four of this panel's 36 selectable combinations exceeded it and could only
+ * ever 422 — 500 positions × 56 days × 2,000 paths asks for 56M path-days
+ * against a 20M ceiling. A control that offers a setting which cannot succeed
+ * is a broken control, however good the resulting error message is. So the
+ * options are disabled here and the server guard stays as the backstop.
+ */
+const PATH_DAY_BUDGET = 20_000_000;
+const affordable = (positions: number, horizon: number, paths: number) =>
+  positions * horizon * paths <= PATH_DAY_BUDGET;
+
 export function PopulationPanel() {
   const { filters } = useStore();
   const [limit, setLimit] = useState(200);
@@ -24,23 +39,31 @@ export function PopulationPanel() {
     () => api.simulatePopulation({
       band: filters.band, store_id: filters.storeId, category: filters.category,
       min_probability: filters.minProbability, coverage: filters.coverage,
+      // The caption below promises the risk table's filters apply. `search` is
+      // one of them and the endpoint accepts it, so dropping it made the promise
+      // false the moment anyone typed in the search box.
+      search: filters.search,
       limit, horizon, n_paths: paths,
     }),
     [filters.band, filters.storeId, filters.category, filters.minProbability,
-     filters.coverage, limit, horizon, paths],
+     filters.coverage, filters.search, limit, horizon, paths],
   );
+
+  const pathDays = limit * horizon * paths;
 
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center gap-2">
         <Select label="Positions" value={String(limit)} onChange={(v) => setLimit(Number(v))}
-                options={[["50", "50"], ["200", "200"], ["500", "500"]]} />
+                options={[50, 200, 500].map((n) => [String(n), String(n), affordable(n, horizon, paths)])} />
         <Select label="Horizon" value={String(horizon)} onChange={(v) => setHorizon(Number(v))}
-                options={[["14", "14 days"], ["28", "28 days"], ["56", "56 days"]]} />
+                options={[14, 28, 56].map((n) => [String(n), `${n} days`, affordable(limit, n, paths)])} />
         <Select label="Paths" value={String(paths)} onChange={(v) => setPaths(Number(v))}
-                options={[["200", "200"], ["500", "500"], ["1000", "1,000"], ["2000", "2,000"]]} />
+                options={[200, 500, 1000, 2000].map(
+                  (n) => [String(n), n.toLocaleString(), affordable(limit, horizon, n)])} />
         <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
           Ranked by exposure. Filters set on the risk table apply here.
+          {" "}{(pathDays / 1e6).toFixed(1)}M of {PATH_DAY_BUDGET / 1e6}M path-days.
         </span>
       </div>
 
@@ -126,8 +149,12 @@ export function PopulationPanel() {
   );
 }
 
+/** Options are `[value, label, enabled]`; a disabled one is over the path-day budget. */
 function Select({ label, value, onChange, options }: {
-  label: string; value: string; onChange: (v: string) => void; options: [string, string][];
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: [string, string, boolean][];
 }) {
   return (
     <label className="flex items-center gap-2 text-[12px]" style={{ color: "var(--text-secondary)" }}>
@@ -136,7 +163,11 @@ function Select({ label, value, onChange, options }: {
               className="rounded-md px-2.5 py-1.5 text-[13px] outline-none cursor-pointer"
               style={{ background: "var(--surface-1)", border: "1px solid var(--border)",
                        color: "var(--text-primary)" }}>
-        {options.map(([v, text]) => <option key={v} value={v}>{text}</option>)}
+        {options.map(([v, text, enabled]) => (
+          <option key={v} value={v} disabled={!enabled}>
+            {enabled ? text : `${text} — over budget`}
+          </option>
+        ))}
       </select>
     </label>
   );

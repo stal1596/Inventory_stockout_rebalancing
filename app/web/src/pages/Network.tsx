@@ -1,4 +1,5 @@
-import { Link } from "react-router-dom";
+import { useEffect, useRef } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { money, num, pct } from "../lib/format";
 import { api } from "../lib/api";
 import { Card, ErrorState, Note, Spinner, Table } from "../components/ui";
@@ -13,6 +14,19 @@ import { useApi } from "../lib/useApi";
  */
 export function Network() {
   const state = useApi(() => api.topology(), []);
+
+  // The supplier-reliability alert deep-links here as `?vendor=<name>`. Nothing
+  // read it, so "X is delivering late" opened an undifferentiated topology and
+  // left the user to find X by eye — the link carried an argument that did
+  // nothing. The alert sends the vendor NAME; ids are matched too so either form
+  // of the link resolves.
+  const [params] = useSearchParams();
+  const wanted = params.get("vendor");
+  const marked = useRef<HTMLDivElement>(null);
+  const loaded = Boolean(state.data);
+  useEffect(() => {
+    if (wanted && loaded) marked.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [wanted, loaded]);
 
   if (state.error) return <ErrorState message={state.error} onRetry={state.refetch} />;
   if (!state.data) return <Spinner label="Resolving the network…" />;
@@ -29,17 +43,23 @@ export function Network() {
             subtitle={`${vendors.length} vendors · ${dcs.length} distribution centres · ${stores.length} stores`}>
         <div className="grid grid-cols-[1fr_auto_1fr_auto_1.4fr] gap-3 items-start">
           <Column title="Vendors">
-            {vendors.map((vendor: any) => (
-              <Node key={vendor.id} title={vendor.name}
-                    lines={[
-                      `${vendor.lead_time_days}d lead ± ${vendor.lead_time_sigma}`,
-                      vendor.on_time_rate !== null && vendor.on_time_rate !== undefined
-                        ? `${pct(vendor.on_time_rate)} on time`
-                        : "on-time not measurable",
-                    ]}
-                    tone={vendor.on_time_rate !== null && vendor.on_time_rate < 0.8
-                      ? "var(--status-serious)" : "var(--series-2)"} />
-            ))}
+            {vendors.map((vendor: any) => {
+              const flagged = Boolean(wanted) &&
+                (vendor.name === wanted || vendor.id === wanted);
+              return (
+                <Node key={vendor.id} title={vendor.name}
+                      highlight={flagged}
+                      nodeRef={flagged ? marked : undefined}
+                      lines={[
+                        `${vendor.lead_time_days}d lead ± ${vendor.lead_time_sigma}`,
+                        vendor.on_time_rate !== null && vendor.on_time_rate !== undefined
+                          ? `${pct(vendor.on_time_rate)} on time`
+                          : "on-time not measurable",
+                      ]}
+                      tone={vendor.on_time_rate !== null && vendor.on_time_rate < 0.8
+                        ? "var(--status-serious)" : "var(--series-2)"} />
+              );
+            })}
           </Column>
 
           <Arrow label="ships to" />
@@ -136,20 +156,27 @@ function Column({ title, children }: { title: string; children: React.ReactNode 
   );
 }
 
-function Node({ title, lines, tone, meter, meterLabel, to }: {
+function Node({ title, lines, tone, meter, meterLabel, to, highlight, nodeRef }: {
   title: string; lines: string[]; tone: string;
   meter?: number; meterLabel?: string; to?: string;
+  /** The node the alert feed pointed at. Ringed so the drill-through lands somewhere. */
+  highlight?: boolean;
+  nodeRef?: React.Ref<HTMLDivElement>;
 }) {
+  const surface = {
+    background: highlight ? "var(--surface-2)" : "var(--surface-3)",
+    borderLeft: `3px solid ${tone}`,
+    outline: highlight ? `1px solid ${tone}` : undefined,
+  };
   const Wrapper = to
     ? ({ children }: { children: React.ReactNode }) => (
         <Link to={to} className="block rounded-md px-2.5 py-2 transition-colors hover:brightness-125"
-              style={{ background: "var(--surface-3)", borderLeft: `3px solid ${tone}` }}>
+              style={surface}>
           {children}
         </Link>
       )
     : ({ children }: { children: React.ReactNode }) => (
-        <div className="rounded-md px-2.5 py-2"
-             style={{ background: "var(--surface-3)", borderLeft: `3px solid ${tone}` }}>
+        <div ref={nodeRef} className="rounded-md px-2.5 py-2 scroll-mt-6" style={surface}>
           {children}
         </div>
       );

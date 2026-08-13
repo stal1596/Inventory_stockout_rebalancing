@@ -12,9 +12,33 @@ So it lives here once, and every surface calls it.
 from __future__ import annotations
 
 import pandas as pd
+from fastapi import HTTPException
 
 # The cover the shortfall test asks committed supply to reach.
 SHORTFALL_HORIZON_DAYS = 14
+
+# The horizons the scored population actually carries -- `score.rank_critical_skus`
+# is called with exactly these in `state.build_state`, and `/api/catalog/filters`
+# advertises the same list.
+SCORED_HORIZONS = (7, 14, 28)
+
+
+def validate_horizon(horizon: int) -> int:
+    """422 on a horizon this population was never scored at.
+
+    ``apply`` skips the probability filter when ``p_stockout_{horizon}d`` is
+    absent, because frames without those columns legitimately reach it. That is
+    right for the internal call and wrong at the edge: ``?horizon=999&
+    min_probability=0.9`` looked like a filtered request and returned the
+    UNFILTERED population, with a total that quietly contradicted the controls.
+    """
+    if horizon not in SCORED_HORIZONS:
+        raise HTTPException(
+            422,
+            f"horizon must be one of {list(SCORED_HORIZONS)}; the population is "
+            f"not scored at {horizon} days.",
+        )
+    return horizon
 
 
 def apply(

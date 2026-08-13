@@ -2,13 +2,33 @@ import { api } from "../lib/api";
 import { days, money, num, pct } from "../lib/format";
 import { Card, Empty, ErrorState, Kpi, Note, Spinner, Table } from "../components/ui";
 import { useApi } from "../lib/useApi";
-import { Link } from "react-router-dom";
+import { useEffect } from "react";
+import { Link, useLocation } from "react-router-dom";
 import { DistributionChart, ForecastChart, SupplyChart, TrendChart } from "../components/charts";
 
 export function Inventory() {
   const state = useApi(() => api.inventory(), []);
   const trendState = useApi(() => api.trend(180), []);
   const trend = trendState.data?.series ?? [];
+
+  // A failed trend fetch used to fall through to `?? []` and render two empty
+  // charts with nothing saying why — the same blank panel a genuinely flat
+  // network would produce. Two cards depend on it, so the failure is stated once
+  // and reused in both.
+  const trendFailure = trendState.error ? (
+    <ErrorState message={trendState.error} onRetry={trendState.refetch} />
+  ) : null;
+
+  // The alert feed deep-links here as `/inventory#lead-time`. React Router does
+  // not scroll to a fragment, and the target card does not exist until the
+  // summary resolves — so this waits for the data rather than firing on mount,
+  // which is why the link previously did nothing at all.
+  const { hash } = useLocation();
+  const loaded = Boolean(state.data);
+  useEffect(() => {
+    if (!hash || !loaded) return;
+    document.getElementById(hash.slice(1))?.scrollIntoView({ behavior: "smooth" });
+  }, [hash, loaded]);
 
   if (state.error) return <ErrorState message={state.error} onRetry={state.refetch} />;
   if (!state.data) return <Spinner label="Aggregating the panel…" />;
@@ -34,32 +54,37 @@ export function Inventory() {
              sub={`median cover ${summary.median_days_of_supply ?? "—"}d`} />
       </div>
 
-      <Card title="Inventory and demand" subtitle="Network totals, last 180 days">
-        <TrendChart data={trend} height={230} />
-        <div className="flex items-center gap-4 mt-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
-          <span className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-sm" style={{ background: "var(--series-1)" }} />
-            Units on hand
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-sm" style={{ background: "var(--series-2)" }} />
-            Units sold
-          </span>
-        </div>
+      <Card id="demand" title="Inventory and demand" subtitle="Network totals, last 180 days">
+        {trendFailure ?? <>
+          <TrendChart data={trend} height={230} />
+          <div className="flex items-center gap-4 mt-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
+            <span className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-sm" style={{ background: "var(--series-1)" }} />
+              Units on hand
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-sm" style={{ background: "var(--series-2)" }} />
+              Units sold
+            </span>
+          </div>
+        </>}
       </Card>
 
-      <Card title="Supply into the network" subtitle="Goods received, and the DC depth behind them">
-        <SupplyChart data={trend} height={200} />
-        <div className="flex items-center gap-4 mt-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
-          <span className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-sm" style={{ background: "var(--series-1)" }} />
-            Units received
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-sm" style={{ background: "var(--series-2)" }} />
-            DC stock
-          </span>
-        </div>
+      <Card id="supply" title="Supply into the network"
+            subtitle="Goods received, and the DC depth behind them">
+        {trendFailure ?? <>
+          <SupplyChart data={trend} height={200} />
+          <div className="flex items-center gap-4 mt-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
+            <span className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-sm" style={{ background: "var(--series-1)" }} />
+              Units received
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-sm" style={{ background: "var(--series-2)" }} />
+              DC stock
+            </span>
+          </div>
+        </>}
         <Note>
           Both series arrive with the demand panel and were previously fetched
           and discarded. Receipts are INFERRED from consecutive-day stock rises,
@@ -131,7 +156,7 @@ export function Inventory() {
           </Note>
         </Card>
 
-        <Card title="Lead time, DC to store"
+        <Card id="lead-time" title="Lead time, DC to store"
               subtitle="Observed against inferred — two routes to the same number">
           {lead.histogram?.length
             ? <DistributionChart data={lead.histogram} xKey="days" yKey="receipts" height={180} />

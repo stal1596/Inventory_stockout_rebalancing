@@ -38,7 +38,12 @@ from stockout.synth.network import Network, load_network
 
 log = logging.getLogger("controltower")
 
-DATA_ROOT = Path("data/synthetic")
+# Anchored to the repo, not to the working directory. `Path("data/synthetic")`
+# resolved against CWD, so `uvicorn app.api.main:app` started from anywhere but
+# the repo root failed startup -- and `Path.exists()` returns False rather than
+# raising, so the cause was never named.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DATA_ROOT = REPO_ROOT / "data" / "synthetic"
 SCORING_HORIZONS = (7, 14, 28)
 
 # Bound on the lazy derivation cache. Every parameterised key is quantised and

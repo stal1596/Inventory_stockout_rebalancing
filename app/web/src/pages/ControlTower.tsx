@@ -46,8 +46,10 @@ export function ControlTower() {
                     how much capital the excess ties up. */}
                 <Kpi label="Excess inventory" value={num(data.excess_inventory_units)}
                      sub={`${money(data.excess_inventory_value)} · beyond 60 days of cover`} />
+                {/* Not the whole order table — order lines placed but not yet due
+                    to have landed, resolved against the inferred lead time. */}
                 <Kpi label="Open replenishment" value={num(data.open_replenishment_orders)}
-                     sub="order lines in the window" />
+                     sub="order lines not yet due to arrive" />
                 <Kpi label="Supplier on-time"
                      value={data.supplier_available ? pct(data.supplier_on_time_rate) : "n/a"}
                      tone={data.supplier_on_time_rate && data.supplier_on_time_rate < 0.8

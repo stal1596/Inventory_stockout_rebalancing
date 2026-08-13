@@ -22,9 +22,12 @@ export function Backtests() {
     () => api.backtestSimulation({ as_of: asOf || undefined, horizon, n_paths: 500 }),
     [asOf, horizon],
   );
+  // The horizon selector drives BOTH cards. It used to be hard-coded to 14 here,
+  // so moving the control relabelled one card and silently left the other on a
+  // different horizon — two numbers side by side describing different windows.
   const decisions = useApi(
-    () => api.backtestDecisions({ as_of: asOf || undefined, horizon: 14, limit: 300 }),
-    [asOf],
+    () => api.backtestDecisions({ as_of: asOf || undefined, horizon, limit: 300 }),
+    [asOf, horizon],
   );
 
   const covered = simulation.data && simulation.data.coverage_p10_p90 !== undefined

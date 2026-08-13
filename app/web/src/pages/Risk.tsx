@@ -71,10 +71,14 @@ export function Risk() {
             ? `${num(positions.data.total)} positions · ${money(positions.data.exposure)} exposed`
             : ""}
         </span>
+        {/* The DEBOUNCED search, the same value the table was built from. Reading
+            `filters.search` here meant the href led the table by up to 250ms, so
+            a click landed mid-keystroke exported a different set of rows than the
+            one on screen. */}
         <a href={exportUrl.risk({
              band: filters.band, store_id: filters.storeId, category: filters.category,
              horizon, min_probability: filters.minProbability, coverage: filters.coverage,
-             search: filters.search,
+             search,
            })}
            className="text-[12px] rounded-md px-2.5 py-1.5"
            style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }}>

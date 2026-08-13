@@ -102,6 +102,7 @@ export interface Simulation {
 export interface Recommendation {
   store_id: string;
   sku_uid: string;
+  /** The lever CODE — `rebalance_from_store` etc. Keys ACTION_COLORS/ACTION_LABELS. */
   action: string;
   action_label: string;
   speed: string;
@@ -112,10 +113,13 @@ export interface Recommendation {
   baseline_lost_units: number;
   problem: string;
   evidence: string;
+  /** The narrative sentence. Distinct from `action`, which is the code. */
+  action_text: string;
   impact: string;
 }
 
-export interface RecommendationDetail extends Omit<Recommendation, "action_label" | "speed"> {
+export interface RecommendationDetail
+  extends Omit<Recommendation, "action" | "action_label" | "speed"> {
   recommended: string;
   recommended_label: string;
   options: {

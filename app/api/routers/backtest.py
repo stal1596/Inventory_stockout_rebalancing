@@ -42,6 +42,17 @@ def _resolve_as_of(state: AppState, as_of: str | None, horizon: int) -> pd.Times
     except ValueError:
         raise HTTPException(422, f"Could not read {as_of!r} as a date.") from None
 
+    # Bounded at BOTH ends. The scoring date reaches `state.cached` as a key, and
+    # an unbounded one is an unbounded key -- and a date before the panel opens is
+    # a mistake worth naming rather than a bare "no open positions" 404.
+    first = pd.Timestamp(state.panel["date"].min())
+    if requested < first:
+        raise HTTPException(
+            422,
+            f"The panel opens {first.date()}; {requested.date()} is before any "
+            f"position exists.",
+        )
+
     if requested > latest:
         raise HTTPException(
             400,

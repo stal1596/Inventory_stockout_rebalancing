@@ -198,7 +198,7 @@ def test_every_recommendation_tells_the_four_part_story(client):
     rows = client.get("/api/prescribe/recommendations?limit=20").json()["rows"]
     assert rows
     for row in rows:
-        for part in ("problem", "evidence", "action", "impact"):
+        for part in ("problem", "evidence", "action_text", "impact"):
             assert row[part], f"{part} missing for {row['sku_uid']}"
 
 
@@ -721,6 +721,169 @@ def test_validation_export_matches_the_json(client):
 # --------------------------------------------------------------------------
 # serialisation: the honest "not enough data" answer must not be a 500
 # --------------------------------------------------------------------------
+
+def test_kpi_numbers_survive_an_all_nan_column(client):
+    """NaN is TRUTHY, so `float(x or 0)` does not fall back -- it forwards NaN.
+
+    Two KPIs read a median price and a left-joined DC balance through exactly
+    that idiom, and Starlette's encoder runs with ``allow_nan=False``. One
+    missing join therefore returned a 500 for the whole control tower rather
+    than a zero for one tile.
+    """
+    from starlette.responses import JSONResponse
+
+    from app.api.routers import overview
+
+    assert overview._finite(np.nan) == 0.0
+    assert overview._finite(None) == 0.0
+    assert overview._finite(np.inf) == 0.0
+    assert overview._finite(np.nan, 7.0) == 7.0
+    assert overview._finite("nonsense") == 0.0
+    assert overview._finite(3.5) == 3.5
+
+    for path in ("/api/overview/kpis", "/api/overview/trend?days=30"):
+        body = client.get(path).json()
+        JSONResponse(body).render(body)   # raises if a NaN survived
+
+
+def test_open_replenishment_orders_is_not_the_whole_order_history(client):
+    """The tile says "open". Counting every row ever placed is a different number."""
+    from app.api.state import get_state
+
+    body = client.get("/api/overview/kpis").json()
+    every_order = len(get_state().dataset.table("replenishment_orders"))
+
+    assert body["open_replenishment_orders"] >= 0
+    assert body["open_replenishment_orders"] < every_order, (
+        "the KPI is still reporting the full order table"
+    )
+
+
+# --------------------------------------------------------------------------
+# reachability: a missing endpoint must look like a missing endpoint
+# --------------------------------------------------------------------------
+
+def test_unknown_api_path_is_a_404_not_the_spa_shell(client):
+    """The SPA catch-all used to answer for undefined /api paths.
+
+    It returned index.html with a 200, so the frontend's `get()` sailed past its
+    error handler and called `.json()` on HTML. A typo'd endpoint surfaced as an
+    opaque parse error -- which is what "cannot reach the API" looked like.
+    Registration order does not fix this: order only protects routes that exist.
+    """
+    for path in ("/api/does-not-exist", "/api/risk/positions/only-one-segment", "/api"):
+        response = client.get(path)
+        assert response.status_code == 404, f"{path} returned {response.status_code}"
+        assert response.headers["content-type"].startswith("application/json"), path
+
+
+def test_spa_handler_cannot_escape_the_build_directory(client):
+    """`WEB_DIST / full_path` is not contained on its own, unlike StaticFiles."""
+    from app.api.main import WEB_DIST, spa
+
+    if not WEB_DIST.exists():
+        pytest.skip("no built frontend to serve")
+
+    escape = spa("../../pyproject.toml")
+    assert escape.path == WEB_DIST.resolve() / "index.html"
+
+
+# --------------------------------------------------------------------------
+# parameters: a filter that cannot be applied must say so
+# --------------------------------------------------------------------------
+
+def test_unscored_horizon_is_refused_rather_than_silently_unfiltered(client):
+    """`p_stockout_999d` does not exist, so the probability filter was skipped.
+
+    The request looked filtered and returned the whole population, with a total
+    that contradicted the controls that produced it.
+    """
+    total = client.get("/api/risk/positions?limit=1").json()["total"]
+
+    for path in (
+        "/api/risk/positions?horizon=999&min_probability=0.9",
+        "/api/export/risk.csv?horizon=999",
+    ):
+        response = client.get(path)
+        assert response.status_code == 422, f"{path} returned {response.status_code}"
+        assert "7, 14, 28" in response.text
+
+    filtered = client.get(
+        "/api/risk/positions?horizon=14&min_probability=0.9&limit=1"
+    ).json()["total"]
+    assert filtered <= total
+
+
+def test_paging_refuses_a_negative_offset(client):
+    """`.iloc[-5:195]` is a surprising page, not an empty one."""
+    for path in ("/api/risk/positions?offset=-5",
+                 "/api/prescribe/recommendations?offset=-5",
+                 "/api/overview/trend?days=-10"):
+        assert client.get(path).status_code == 422, path
+
+
+# --------------------------------------------------------------------------
+# the prescription feed's action code
+# --------------------------------------------------------------------------
+
+# The keys `app/web/src/lib/format.ts` colours and labels the action feed by.
+LEVER_CODES = {
+    "rebalance_from_store", "expedite_from_dc", "expedite_from_supplier", "no_action",
+}
+
+
+def test_recommendation_action_is_a_lever_code_not_prose(client):
+    """`_shape_row` spreads the narrative LAST, so `_story` used to clobber it.
+
+    The UI keys its colour swatches on the lever code, so every swatch rendered
+    blank while `action_label` kept working and hid the cause.
+    """
+    body = client.get("/api/prescribe/recommendations?limit=20").json()
+    assert body["rows"]
+    for row in body["rows"]:
+        assert row["action"] in LEVER_CODES, f"{row['action']!r} is not a lever code"
+        assert row["action_text"] != row["action"]
+        assert " " in row["action_text"], "action_text should be the sentence"
+
+    for entry in body["mix"]:
+        assert entry["recommended_action"] in LEVER_CODES
+
+
+def test_recommendation_detail_agrees_with_the_feed_row(client):
+    """Both surfaces are the same object; they must not name the lever differently."""
+    row = client.get("/api/prescribe/recommendations?limit=1").json()["rows"][0]
+    detail = client.get(f"/api/prescribe/{row['store_id']}/{row['sku_uid']}").json()
+    assert detail["recommended"] == row["action"]
+    assert detail["action_text"] == row["action_text"]
+
+
+def test_imbalance_alert_donors_share_the_scope_of_the_store_they_serve(client):
+    """The scope key was derived from the FULL population and sliced positionally.
+
+    That dropped the index and gave each at-risk position an unrelated row's
+    zone, so the homepage proposed transfers between stores that cannot transfer
+    to each other -- the disagreement with /api/prescribe that reusing
+    `find_donors` is supposed to make impossible.
+    """
+    from app.api.services import alerts
+    from app.api.state import get_state
+    from stockout.model import prescribe
+
+    app = get_state()
+    rows = alerts.find_imbalance(app)
+    if not rows:
+        pytest.skip("no imbalance pairs in the test extract")
+
+    levers = prescribe.resolve_levers(app.network)
+    scope = prescribe._scope_key_for(app.scored, app.dataset, levers)
+    by_store = dict(zip(app.scored["store_id"], scope))
+
+    for row in rows:
+        assert row["donor_store"] != row["store_id"]
+        assert by_store[row["donor_store"]] == by_store[row["store_id"]], (
+            f"{row['donor_store']} cannot serve {row['store_id']}"
+        )
+
 
 def test_degenerate_backtest_scores_serialise_as_null():
     """NaN is not JSON, and Starlette raises on it rather than emitting null.

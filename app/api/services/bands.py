@@ -93,8 +93,10 @@ def summary(scored: pd.DataFrame) -> list[dict]:
             {
                 "band": band,
                 "positions": int(len(chunk)),
-                "lost_units": round(float(chunk["expected_lost_units"].sum()), 1),
-                "lost_revenue": round(float(chunk["expected_lost_revenue"].sum()), 0),
+                # `.sum()` of an all-NaN column is NaN, and NaN reaching the JSON
+                # encoder is a 500 for the whole control tower.
+                "lost_units": round(float(np.nan_to_num(chunk["expected_lost_units"].sum())), 1),
+                "lost_revenue": round(float(np.nan_to_num(chunk["expected_lost_revenue"].sum())), 0),
             }
         )
     return rows

@@ -13,7 +13,7 @@ import pandas as pd
 from fastapi import APIRouter, Depends
 
 from app.api.services.diagnostics import dc_structure
-from app.api.state import AppState, get_state, records
+from app.api.state import REPO_ROOT, AppState, get_state, records
 from stockout.io import load_config
 
 router = APIRouter(prefix="/api", tags=["catalog"])
@@ -154,13 +154,14 @@ def topology(state: AppState = Depends(get_state)) -> dict:
 def provenance(state: AppState = Depends(get_state)) -> dict:
     """Which tables exist here, and which the supplied extract actually has."""
     config = load_config()
-    sample_root = "sample_data"
-    from pathlib import Path
+    # Repo-anchored, not CWD-relative: launched from elsewhere, every
+    # `in_supplied_extract` flag silently read False.
+    sample_root = REPO_ROOT / "sample_data"
 
     tables = []
     for name, spec in config["tables"].items():
         in_synthetic = state.dataset.has(name)
-        in_sample = (Path(sample_root) / spec["file"]).exists()
+        in_sample = (sample_root / spec["file"]).exists()
         tables.append(
             {
                 "table": name,

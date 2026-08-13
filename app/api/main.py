@@ -14,7 +14,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -69,8 +69,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Order matters only against the SPA catch-all below, which must stay last or an
-# unmatched /api path would be served index.html instead of a 404.
+# The SPA catch-all below must stay last, or a DEFINED route would be shadowed by
+# index.html. Ordering alone does not protect UNDEFINED /api paths -- those still
+# fall through to the catch-all, which is why `spa` refuses them explicitly.
 for router in (overview.router, risk.router, simulate.router, prescribe.router,
                catalog.router, evidence.router, quality.router, policy.router,
                backtest.router, exports.router):
@@ -90,13 +91,36 @@ def health() -> dict:
 
 
 # Serve the built SPA when it exists, so one process runs the whole product.
-if WEB_DIST.exists():
-    app.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
+#
+# Guarding on the ASSETS directory rather than on `dist` alone: StaticFiles raises
+# at construction time when its directory is missing, so an interrupted `vite
+# build` that left an index.html behind would take the API down with the UI.
+if (WEB_DIST / "index.html").is_file():
+    if (WEB_DIST / "assets").is_dir():
+        app.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
 
     @app.get("/{full_path:path}")
     def spa(full_path: str):
-        """Client-side routing: unknown paths return index.html, not a 404."""
-        candidate = WEB_DIST / full_path
-        if full_path and candidate.is_file():
+        """Client-side routing: unknown paths return index.html, not a 404.
+
+        Two refusals, both of which used to be missing.
+
+        **An unmatched /api path is a 404, not the shell.** Being registered last
+        only protects the routes that exist; `/api/typo` matched nothing above and
+        arrived here, and returning index.html with a 200 meant the frontend's
+        `get()` sailed past its error handler and called `.json()` on HTML. A
+        missing endpoint therefore surfaced as an opaque parse error rather than
+        as a 404 -- which is what "could not reach the API" looked like.
+
+        **A path may not escape the build directory.** `StaticFiles` (mounted at
+        /assets) contains its own paths; this hand-rolled handler did not, so a
+        request carrying `..` segments served arbitrary files from the repo.
+        """
+        if full_path == "api" or full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail=f"No such endpoint: /{full_path}")
+
+        root = WEB_DIST.resolve()
+        candidate = (root / full_path).resolve()
+        if full_path and candidate.is_relative_to(root) and candidate.is_file():
             return FileResponse(candidate)
-        return FileResponse(WEB_DIST / "index.html")
+        return FileResponse(root / "index.html")

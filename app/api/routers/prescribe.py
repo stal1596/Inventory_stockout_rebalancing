@@ -95,7 +95,14 @@ def build_recommendations(
 
 
 def _story(row: pd.Series, horizon: int) -> dict:
-    """The four-part narrative for one position."""
+    """The four-part narrative for one position.
+
+    The prose sentence is ``action_text``, NOT ``action``. ``_shape_row`` spreads
+    this dict last, so naming it ``action`` silently overwrote the machine-readable
+    lever code beside it -- and the UI keys its colour swatches on that code, so
+    every swatch on the recommendations table rendered blank while `action_label`
+    kept working and hid the cause.
+    """
     action = row["recommended_action"]
     stock = float(row.get("start_stock", 0) or 0)
     rate = float(row.get("trailing_demand_rate", 0) or 0)
@@ -120,7 +127,7 @@ def _story(row: pd.Series, horizon: int) -> dict:
             "problem": problem if lost > 0 else
             f"{row['sku_uid']} at {row['store_id']} is not projected to run short.",
             "evidence": evidence,
-            "action": "No action. Every available lever costs more than it saves here.",
+            "action_text": "No action. Every available lever costs more than it saves here.",
             "impact": "Intervening would reduce net value.",
         }
 
@@ -136,7 +143,7 @@ def _story(row: pd.Series, horizon: int) -> dict:
         f"{float(row.get('expected_margin_protected', 0) or 0):,.0f} in margin "
         f"for a net {float(row.get('expected_net_value', 0) or 0):,.0f} after freight."
     )
-    return {"problem": problem, "evidence": evidence, "action": action_text,
+    return {"problem": problem, "evidence": evidence, "action_text": action_text,
             "impact": impact}
 
 
@@ -195,10 +202,10 @@ def _feed(
 
 @router.get("/recommendations")
 def recommendations(
-    limit: int = Query(100, le=500),
+    limit: int = Query(100, ge=1, le=500),
     action: str | None = None,
     store_id: str | None = None,
-    offset: int = 0,
+    offset: int = Query(0, ge=0),
     state: AppState = Depends(get_state),
 ) -> dict:
     result = state.recommendations
@@ -216,7 +223,11 @@ class Scenario(BaseModel):
     horizon: int = Field(DEFAULT_HORIZON, ge=7, le=60)
     n_paths: int = Field(250, ge=100, le=1000)
     margin_rate: float = Field(engine.DEFAULT_MARGIN_RATE, ge=0.05, le=0.95)
-    seed: int = 20260811
+    # Bounded because it goes into the `cached` key, and every distinct seed pins
+    # a whole-population recommendations frame in a 32-entry LRU. Unbounded, a
+    # loop over seeds is a memory leak with a lid on it -- exactly what
+    # `AppState.cached` documents as the failure mode of an unquantised key.
+    seed: int = Field(20260811, ge=0, le=2_147_483_647)
 
     rebalance_cost: float | None = Field(None, ge=0, le=5000)
     expedite_dc_cost: float | None = Field(None, ge=0, le=5000)

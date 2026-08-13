@@ -33,13 +33,14 @@ def positions(
     store_id: str | None = None,
     category: str | None = None,
     horizon: int = 14,
-    min_probability: float = 0.0,
+    min_probability: float = Query(0.0, ge=0.0, le=1.0),
     coverage: str | None = None,
     search: str | None = None,
-    limit: int = Query(200, le=2000),
-    offset: int = 0,
+    limit: int = Query(200, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
     state: AppState = Depends(get_state),
 ) -> dict:
+    filters.validate_horizon(horizon)
     frame = filters.apply(
         state.scored,
         band=band, store_id=store_id, category=category, horizon=horizon,
@@ -47,7 +48,7 @@ def positions(
     )
 
     total = len(frame)
-    exposure = float(frame["expected_lost_revenue"].sum()) if total else 0.0
+    exposure = float(frame["expected_lost_revenue"].fillna(0).sum()) if total else 0.0
     page = frame.sort_values("expected_lost_revenue", ascending=False).iloc[
         offset : offset + limit
     ]

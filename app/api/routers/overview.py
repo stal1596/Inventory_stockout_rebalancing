@@ -9,12 +9,52 @@ the table underneath it is worse than no control tower.
 from __future__ import annotations
 
 import numpy as np
-from fastapi import APIRouter, Depends
+import pandas as pd
+from fastapi import APIRouter, Depends, Query
 
 from app.api.services import alerts, bands
-from app.api.state import AppState, get_state
+from app.api.state import AppState, get_state, jsonable
 
 router = APIRouter(prefix="/api/overview", tags=["overview"])
+
+
+def _finite(value, fallback: float = 0.0) -> float:
+    """A number, or the fallback when it is missing or not finite.
+
+    NOT ``float(value or fallback)``. NaN is TRUTHY, so that idiom passes NaN
+    straight through -- and Starlette's encoder runs with ``allow_nan=False``,
+    so a single NaN turns the whole response into a 500. A left-join miss in the
+    trend rollup used to blank the entire control tower this way.
+    """
+    if value is None:
+        return fallback
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return number if np.isfinite(number) else fallback
+
+
+def _open_order_lines(state: AppState) -> int:
+    """Replenishment order lines not yet expected to have landed at ``as_of``.
+
+    ``replenishment_orders`` records placements only -- the extract carries no
+    goods-receipt date for store orders (see invariant 2), so "still open" is
+    resolved against the inferred DC->store lead time rather than read. Counting
+    every row in the table, which is what this KPI used to do, reports the whole
+    order history under a label that says "open".
+    """
+    orders = state.dataset.table("replenishment_orders")
+    if orders is None or orders.empty:
+        return 0
+    if "date" not in orders.columns:
+        return int(len(orders))
+
+    lead = (state.rollups.get("lead_time") or {}).get("inferred") or {}
+    days = _finite(lead.get("mean"), 7.0)
+    placed = pd.to_datetime(orders["date"], errors="coerce")
+    cutoff = state.as_of - pd.Timedelta(days=float(np.ceil(days)))
+    return int(((placed > cutoff) & (placed <= state.as_of)).sum())
 
 
 @router.get("/kpis")
@@ -30,12 +70,13 @@ def kpis(state: AppState = Depends(get_state)) -> dict:
         chunk = scored[scored[column] >= threshold]
         return {
             "positions": int(len(chunk)),
-            "revenue": round(float(chunk["expected_lost_revenue"].sum()), 0),
+            "revenue": round(_finite(chunk["expected_lost_revenue"].sum()), 0),
         }
 
-    open_orders = state.dataset.table("replenishment_orders")
-    inbound = float(snapshot["intransit_stock"].sum()) if "intransit_stock" in snapshot else 0.0
-    price = scored["avg_price"].median() if "avg_price" in scored.columns else 0.0
+    inbound = (
+        _finite(snapshot["intransit_stock"].sum()) if "intransit_stock" in snapshot else 0.0
+    )
+    price = _finite(scored["avg_price"].median()) if "avg_price" in scored.columns else 0.0
 
     return {
         "as_of": state.as_of.strftime("%Y-%m-%d"),
@@ -46,25 +87,20 @@ def kpis(state: AppState = Depends(get_state)) -> dict:
             "14": at_risk(14),
             "28": at_risk(28),
         },
-        "inventory_on_hand_units": round(rollups["on_hand_units"], 0),
-        "inventory_at_dc_units": round(rollups["dc_units"], 0),
+        "inventory_on_hand_units": round(_finite(rollups["on_hand_units"]), 0),
+        "inventory_at_dc_units": round(_finite(rollups["dc_units"]), 0),
         "inventory_inbound_units": round(inbound, 0),
         "inventory_value_at_risk": round(
-            float(scored["expected_lost_revenue"].sum()), 0
+            _finite(scored["expected_lost_revenue"].sum()), 0
         ),
-        "excess_inventory_units": round(rollups["excess_units"], 0),
-        "excess_inventory_value": round(
-            float(rollups["excess_units"]) * float(price or 0), 0
-        ),
-        "median_days_of_supply": rollups["median_days_of_supply"],
-        "inventory_turnover": rollups["turnover"],
-        "open_replenishment_orders": int(len(open_orders)) if open_orders is not None else 0,
+        "excess_inventory_units": round(_finite(rollups["excess_units"]), 0),
+        "excess_inventory_value": round(_finite(rollups["excess_units"]) * price, 0),
+        "median_days_of_supply": jsonable(rollups["median_days_of_supply"]),
+        "inventory_turnover": jsonable(rollups["turnover"]),
+        "open_replenishment_orders": _open_order_lines(state),
         "supplier_on_time_rate": (
-            round(
-                float(
-                    np.mean([v["on_time_rate"] for v in rollups["supplier"]["vendors"]])
-                ),
-                4,
+            jsonable(
+                np.mean([v["on_time_rate"] for v in rollups["supplier"]["vendors"]])
             )
             if rollups["supplier"]["available"] and rollups["supplier"]["vendors"]
             else None
@@ -85,17 +121,26 @@ def alert_feed(state: AppState = Depends(get_state)) -> dict:
 
 
 @router.get("/trend")
-def trend(days: int = 120, state: AppState = Depends(get_state)) -> dict:
-    """Network-level inventory and demand over time."""
+def trend(
+    days: int = Query(120, ge=1, le=3650),
+    state: AppState = Depends(get_state),
+) -> dict:
+    """Network-level inventory and demand over time.
+
+    ``days`` is bounded because ``.tail(days)`` on a negative returns an empty
+    frame -- a silently blank chart rather than an error.
+    """
     frame = state.rollups["trend"].tail(days)
     return {
         "series": [
             {
                 "date": row["date"].strftime("%Y-%m-%d"),
-                "on_hand": round(float(row["on_hand"]), 0),
-                "units_sold": round(float(row["units_sold"]), 0),
-                "received": round(float(row["received"]), 0),
-                "dc_stock": round(float(row.get("warehouse_stock", 0) or 0), 0),
+                "on_hand": round(_finite(row["on_hand"]), 0),
+                "units_sold": round(_finite(row["units_sold"]), 0),
+                "received": round(_finite(row["received"]), 0),
+                # `warehouse_stock` is a LEFT join in the trend rollup, so a day
+                # with no DC row lands here as NaN.
+                "dc_stock": round(_finite(row.get("warehouse_stock")), 0),
             }
             for _, row in frame.iterrows()
         ]

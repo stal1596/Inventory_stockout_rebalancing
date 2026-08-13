@@ -4,13 +4,15 @@ import type { ApiState } from "../lib/useApi";
 import { bandColor, num } from "../lib/format";
 
 export function Card({
-  title, subtitle, right, children, className = "",
+  title, subtitle, right, children, className = "", id,
 }: {
   title?: string; subtitle?: string; right?: ReactNode;
   children: ReactNode; className?: string;
+  /** Anchor target for a `#hash` deep-link from the alert feed. */
+  id?: string;
 }) {
   return (
-    <section className={`card p-5 min-w-0 ${className}`}>
+    <section id={id} className={`card p-5 min-w-0 scroll-mt-6 ${className}`}>
       {(title || right) && (
         <header className="flex items-start justify-between gap-4 mb-4">
           <div>

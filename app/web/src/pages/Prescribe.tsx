@@ -187,7 +187,7 @@ export function Prescribe() {
                       </div>
                       <Story label="Problem" text={detail.data.problem} />
                       <Story label="Evidence" text={detail.data.evidence} />
-                      <Story label="Recommended action" text={detail.data.action}
+                      <Story label="Recommended action" text={detail.data.action_text}
                              accent={ACTION_COLORS[detail.data.recommended]} />
                       <Story label="Expected impact" text={detail.data.impact} />
 

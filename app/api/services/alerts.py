@@ -187,8 +187,14 @@ def find_imbalance(state, limit: int = 40) -> list[dict]:
     if at_risk.empty:
         return []
 
-    scope = prescribe._scope_key_for(state.scored, state.dataset, levers)
-    at_risk = at_risk.assign(scope_key=scope.to_numpy()[: len(at_risk)])
+    # Derive the scope FROM the filtered frame. Computing it over the whole
+    # population and then taking `.to_numpy()[:len(at_risk)]` dropped the index
+    # and handed each at-risk position some unrelated row's zone, so the alert
+    # proposed transfers between stores that cannot transfer to each other --
+    # the exact disagreement with /api/prescribe this function exists to avoid.
+    at_risk = at_risk.assign(
+        scope_key=prescribe._scope_key_for(at_risk, state.dataset, levers)
+    )
 
     merged = at_risk.merge(donors, on=["sku_uid", "scope_key"], how="inner")
     merged = merged[merged["donor_store"] != merged["store_id"]]
