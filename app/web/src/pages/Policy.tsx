@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api, exportUrl, type Estimator } from "../lib/api";
 import { days, money, num, pct } from "../lib/format";
 import {
-  Card, DownloadCsv, Empty, Kpi, Loadable, Note, Table,
+  Card, DownloadCsv, Empty, Kpi, Loadable, Note, Table, TermLabel,
 } from "../components/ui";
 import { DistributionChart } from "../components/charts";
 import { useApi } from "../lib/useApi";
@@ -54,8 +54,8 @@ export function Policy() {
                   (s) => [String(s), `${pct(s, s >= 0.99 ? 1 : 0)} service level`] as [string, string])} />
         <Select value={estimator} onChange={(v) => change(setEstimator)(v as Estimator)}
                 options={[
-                  ["lead_time_demand", "Lead-time demand"],
-                  ["model_inversion", "Model inversion — NOT VALIDATED"],
+                  ["lead_time_demand", "Standard method (recommended)"],
+                  ["model_inversion", "Working backwards from the risk model — NOT VALIDATED"],
                 ]} />
         <Select value={storeId} onChange={change(setStoreId)}
                 options={[["", "All stores"],
@@ -65,7 +65,7 @@ export function Policy() {
                style={{ background: "var(--surface-1)", border: "1px solid var(--border)" }}>
           <input type="checkbox" checked={belowOnly}
                  onChange={(e) => change(setBelowOnly)(e.target.checked)} />
-          Below reorder point only
+          Only products due a reorder
         </label>
         <span className="ml-auto">
           <DownloadCsv href={exportUrl.policy({
@@ -75,7 +75,7 @@ export function Policy() {
         </span>
       </div>
 
-      <Loadable state={policy} label="Solving reorder points…">
+      <Loadable state={policy} label="Working out when to reorder…">
         {(data) => (
           <>
             {/* Not a footnote. Choosing the failed estimator has to look like a
@@ -93,30 +93,48 @@ export function Policy() {
             )}
 
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-              <Kpi label="Below reorder point" value={num(data.positions_below_reorder_point)}
+              <Kpi label="Due a reorder now" value={num(data.positions_below_reorder_point)}
                    tone={data.positions_below_reorder_point ? "var(--status-serious)" : undefined}
-                   sub={`of ${num(data.total)} positions`} />
-              <Kpi label="Protection window" value={days(data.protection_days)}
+                   sub={`of ${num(data.total)} products`}
+                   hint="Products already at or below the level where an order should go in." />
+              <Kpi name="protection_days" value={days(data.protection_days)}
                    sub={data.lead_time.inferred.mean !== null
-                     ? `lead ${data.lead_time.inferred.mean}d ± ${data.lead_time.inferred.std}`
-                     : "lead time not inferable"} />
-              <Kpi label="Service level" value={pct(data.service_level, 1)}
-                   sub={data.estimator_label}
+                     ? `delivery takes ${data.lead_time.inferred.mean}d ± ${data.lead_time.inferred.std}`
+                     : "delivery time cannot be worked out"} />
+              {/* The raw `estimator_label` read "Lead-time demand (negative
+                  binomial)" here while the picker above it now says "Standard
+                  method" -- the same choice, named two different ways on one
+                  screen. The server's wording moves into the hint. */}
+              <Kpi name="service_level" value={pct(data.service_level, 1)}
+                   sub={data.validated
+                     ? "how often you want to avoid running short"
+                     : "NOT VALIDATED — see the warning above"}
+                   hint={`Aiming to have stock in hand ${pct(data.service_level, 1)} of the times a delivery is due. Method: ${data.estimator_label}.`}
                    tone={data.validated ? undefined : "var(--status-critical)"} />
-              <Kpi label="Incumbent rule" value={`${data.incumbent.cover_days}d`}
-                   sub="what the business does today"
-                   hint="The rule the recommendation has to beat at matched inventory." />
+              <Kpi name="incumbent_rule" label="Rule in force today"
+                   value={`${data.incumbent.cover_days}d of cover`}
+                   sub="what the business does now"
+                   hint="Reorder when stock falls to this many days of selling. Any recommendation has to beat this rule at the same level of inventory to be worth adopting." />
             </div>
 
             <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,360px)] gap-5 items-start">
-              <Card title="Reorder points"
-                    subtitle="Ranked by the level each position should reorder at">
+              <Card title="When to reorder each product"
+                    subtitle="The stock level that should trigger the next order">
                 {!data.rows.length ? (
-                  <Empty>No positions match these filters.</Empty>
+                  <Empty>No products match these filters.</Empty>
                 ) : (
                   <>
-                    <Table head={["SKU", "Store", "On hand", "Cover", "Demand/day",
-                                  "Reorder at", "Cover at ROP", "Safety", "Textbook", ""]}>
+                    <Table head={[
+                      "Product", "Store",
+                      <TermLabel key="stock" name="stock_on_hand" />,
+                      <TermLabel key="cover" name="cover_days_now" label="Days left" />,
+                      <TermLabel key="rate" name="trailing_demand_rate" label="Sells a day" />,
+                      <TermLabel key="rop" name="recommended_reorder_point" label="Reorder at" />,
+                      "That's days of cover",
+                      <TermLabel key="safety" name="safety_stock" label="Buffer" />,
+                      <TermLabel key="tb" name="textbook_reorder_point" label="Textbook" />,
+                      "",
+                    ]}>
                       {data.rows.map((row) => (
                         <tr key={`${row.store_id}-${row.sku_uid}`}
                             style={{ borderBottom: "1px solid var(--border)" }}>
@@ -143,7 +161,7 @@ export function Policy() {
                           <td className="py-2 pr-4 text-[12px]"
                               style={{ color: row.below_reorder_point
                                 ? "var(--status-critical)" : "var(--text-muted)" }}>
-                            {row.below_reorder_point ? "below" : "ok"}
+                            {row.below_reorder_point ? "order now" : "fine"}
                           </td>
                         </tr>
                       ))}
@@ -155,37 +173,51 @@ export function Policy() {
                 <Note>{data.caveat}</Note>
               </Card>
 
-              <div className="flex flex-col gap-5 xl:sticky xl:top-[76px] min-w-0">
-                <Card title="The verdict">
+              <div className="flex flex-col gap-5 xl:sticky xl:top-[96px] min-w-0">
+                <Card title="The bottom line">
                   <p className="text-[13px] leading-relaxed">{data.verdict}</p>
                 </Card>
 
-                <Card title="How this is computed">
-                  <p className="text-[13px] leading-relaxed mb-3">{data.basis}</p>
+                <Card title="How this is worked out">
+                  {/* A plain lead ABOVE the server's own wording, not instead of
+                      it. The precise version is the one an analyst will want to
+                      check, so it stays on the page in full. */}
+                  <p className="text-[13px] leading-relaxed mb-3">
+                    Add up how much you expect to sell while waiting for the
+                    delivery, then add a buffer for the weeks that run hot. The
+                    buffer is sized from how bursty demand actually is here, not
+                    from an assumption that it arrives evenly.
+                  </p>
+                  <p className="text-[12px] leading-relaxed mb-3"
+                     style={{ color: "var(--text-muted)" }}>
+                    {data.basis}
+                  </p>
                   <div className="grid grid-cols-2 gap-2">
-                    <Fact label="Dispersion k"
+                    <Fact name="dispersion_k"
                           value={data.dispersion_k === null ? "—" : num(data.dispersion_k, 3)} />
-                    <Fact label="Protection" value={days(data.protection_days)} />
+                    <Fact name="protection_days" label="Protection"
+                          value={days(data.protection_days)} />
                   </div>
                   <Note>
-                    A negative-binomial k keeps the overdispersion the textbook
-                    normal approximation throws away — which matters most on the
-                    slow tail sizes where a size run breaks first.
+                    Real demand arrives in bursts, and the standard formula
+                    assumes it does not. Keeping the burstiness in matters most
+                    on slow-moving sizes — which is exactly where a size run
+                    breaks first.
                   </Note>
                 </Card>
 
-                <Card title="Lead time, DC to store"
-                      subtitle="Inferred, because no goods-receipt date exists">
+                <Card title="How long deliveries take"
+                      subtitle="Worked out from stock movements, since no delivery dates are recorded">
                   {data.lead_time.histogram?.length ? (
                     <DistributionChart data={data.lead_time.histogram}
                                        xKey="days" yKey="receipts" height={150} />
                   ) : <Empty>No receipts to chart.</Empty>}
                   <div className="grid grid-cols-2 gap-2 mt-3">
-                    <Fact label="Observed"
+                    <Fact name="lead_time" label="From records"
                           value={data.lead_time.observed
                             ? `${data.lead_time.observed.mean}d ± ${data.lead_time.observed.std}`
                             : "—"} />
-                    <Fact label="Inferred"
+                    <Fact name="lead_time" label="From stock moves"
                           value={data.lead_time.inferred.mean !== null
                             ? `${data.lead_time.inferred.mean}d ± ${data.lead_time.inferred.std}`
                             : "—"} />
@@ -226,11 +258,11 @@ function Pager({ total, offset, shown, onOffset }: {
   );
 }
 
-function Fact({ label, value }: { label: string; value: string }) {
+function Fact({ name, label, value }: { name: string; label?: string; value: string }) {
   return (
     <div className="rounded-md px-3 py-2" style={{ background: "var(--surface-3)" }}>
       <p className="text-[10px] uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
-        {label}
+        <TermLabel name={name} label={label} />
       </p>
       <p className="text-[14px] font-medium tnum mt-0.5">{value}</p>
     </div>

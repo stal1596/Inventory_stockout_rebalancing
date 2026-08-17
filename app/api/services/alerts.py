@@ -53,8 +53,12 @@ def build(state) -> list[dict]:
         out.append(
             _alert(
                 severity,
-                f"{len(at_risk):,} SKUs likely to stock out within {horizon} days",
-                f"{revenue:,.0f} of revenue exposed at more than 50% probability.",
+                f"{len(at_risk):,} products likely to run out within {horizon} days",
+                # The currency symbol was missing here while the web layer's own
+                # formatter prints one, so the same figure read differently
+                # depending on which panel you were looking at.
+                f"₹{revenue:,.0f} of sales at stake. Each of these is more "
+                "likely than not to sell out in the window.",
                 "risk",
                 {"horizon": horizon, "min_probability": 0.5},
                 metric=revenue,
@@ -68,11 +72,11 @@ def build(state) -> list[dict]:
         out.append(
             _alert(
                 "critical",
-                f"{row['sku_uid']} at {row['store_id']} is the largest single exposure",
+                f"{row['sku_uid']} at {row['store_id']} has the most money riding on it",
                 (
-                    f"{row.get('p_stockout_14d', 0):.0%} chance of stocking out within "
-                    f"14 days, {row['expected_lost_revenue']:,.0f} at risk with "
-                    f"{row.get('days_of_cover', 0):.1f} days of cover left."
+                    f"{row.get('p_stockout_14d', 0):.0%} chance of running out within "
+                    f"14 days, ₹{row['expected_lost_revenue']:,.0f} of sales at stake, "
+                    f"with {row.get('days_of_cover', 0):.1f} days of stock left."
                 ),
                 "risk-detail",
                 {"store_id": row["store_id"], "sku_uid": row["sku_uid"]},
@@ -93,10 +97,10 @@ def build(state) -> list[dict]:
             out.append(
                 _alert(
                     "warning",
-                    f"{len(critical_short):,} high-risk SKUs have insufficient "
-                    "inbound cover",
-                    "Committed inbound stock does not cover 14-day demand for these "
-                    "positions, so the shortfall cannot resolve itself.",
+                    f"{len(critical_short):,} urgent products do not have enough "
+                    "stock on the way",
+                    "What is already shipped will not cover the next 14 days of "
+                    "selling, so these will not sort themselves out.",
                     "risk",
                     {"band": bands.HIGH, "coverage": "short"},
                     metric=float(critical_short["expected_lost_revenue"].sum()),
@@ -113,11 +117,11 @@ def build(state) -> list[dict]:
                     "warning",
                     f"{worst_vendor['vendor']} is delivering late",
                     (
-                        f"{worst_vendor['on_time_rate']:.0%} on-time across "
-                        f"{worst_vendor['receipts']:,} receipts. Promised "
-                        f"{worst_vendor['lead_days_promised']:.0f} days, actual "
-                        f"{worst_vendor['lead_days_actual']:.0f} "
-                        f"(+/- {worst_vendor['lead_days_std']:.0f})."
+                        f"Only {worst_vendor['on_time_rate']:.0%} of "
+                        f"{worst_vendor['receipts']:,} deliveries arrived on time. "
+                        f"They promise {worst_vendor['lead_days_promised']:.0f} days "
+                        f"and take {worst_vendor['lead_days_actual']:.0f} on average, "
+                        f"give or take {worst_vendor['lead_days_std']:.0f}."
                     ),
                     "network",
                     {"vendor": worst_vendor["vendor"]},
@@ -131,10 +135,11 @@ def build(state) -> list[dict]:
         out.append(
             _alert(
                 "warning",
-                f"Inventory imbalance across {len(imbalance)} SKUs",
+                f"{len(imbalance)} products are in the wrong shop",
                 (
-                    "One store is at risk while a peer in the same zone holds "
-                    "surplus of the same SKU. These are transfer candidates."
+                    "One store is about to run out while a nearby store has more "
+                    "of the same product than it needs. Moving stock between them "
+                    "costs far less than an expedited delivery."
                 ),
                 "prescribe",
                 {"action": "rebalance_from_store"},
@@ -151,11 +156,12 @@ def build(state) -> list[dict]:
             out.append(
                 _alert(
                     "info",
-                    "DC to store lead time is highly variable",
+                    "Deliveries from the warehouse are unpredictable",
                     (
-                        f"{observed['mean']:.1f} days on average but "
-                        f"+/- {observed['std']:.1f}. Safety stock is more "
-                        "sensitive to this spread than to the average."
+                        f"{observed['mean']:.1f} days on average, but swinging by "
+                        f"{observed['std']:.1f} days either side. How much buffer "
+                        "stock you need depends more on that swing than on the "
+                        "average."
                     ),
                     "inventory",
                     {"view": "lead-time"},

@@ -2,8 +2,16 @@ import { useEffect, useRef } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { money, num, pct } from "../lib/format";
 import { api } from "../lib/api";
-import { Card, ErrorState, Note, Spinner, Table } from "../components/ui";
+import { Card, ErrorState, Note, Spinner, Table, TermLabel } from "../components/ui";
 import { useApi } from "../lib/useApi";
+
+/** The config's own vocabulary, which was reaching the screen as `same_zone`. */
+const SCOPE_WORDS: Record<string, string> = {
+  same_zone: "Within the same zone",
+  same_dc: "Between stores sharing a warehouse",
+  same_city: "Within the same city",
+  any: "Anywhere in the network",
+};
 
 /**
  * Supplier → DC → store, drawn from config/network.yaml rather than hard-coded,
@@ -96,14 +104,24 @@ export function Network() {
             </div>
           </Column>
         </div>
+        {/* The server's sentence is the precise one and stays; it just needed
+            something in front of it saying why anyone should care. */}
         <Note>
-          Recovered from the data, not assumed: {topology.recovered}
+          None of this shape was assumed — it was worked out from the stock
+          records themselves, which is the check that the map above matches how
+          goods actually move.{" "}
+          <span style={{ color: "var(--text-secondary)" }}>{topology.recovered}</span>
         </Note>
       </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <Card title="Distribution centres" subtitle="Configured in config/network.yaml">
-          <Table head={["DC", "Zones", "Stores", "Fill rate", "Lead days"]}>
+        <Card title="Warehouses"
+              subtitle="Which stores each one serves, and how well it serves them">
+          <Table head={[
+            "Warehouse", "Zones", "Stores",
+            <TermLabel key="fill" name="fill_rate" label="Orders filled" />,
+            "Days to deliver",
+          ]}>
             {dcs.map((dc: any) => (
               <tr key={dc.id} style={{ borderBottom: "1px solid var(--border)" }}>
                 <td className="py-2 pr-4 font-medium">{dc.id}</td>
@@ -117,26 +135,29 @@ export function Network() {
             ))}
           </Table>
           <Note>
-            A zone served by two DCs is refused when the config loads: an
-            ambiguous store→DC mapping is exactly the condition the supplied
-            extract cannot resolve.
+            Every store is served by exactly one warehouse. A zone split between
+            two is rejected outright, because then nobody can say where a store's
+            stock is really coming from.
           </Note>
         </Card>
 
-        <Card title="Transfer policy" subtitle="What rebalancing is allowed to do">
+        <Card title="Rules for moving stock between stores"
+              subtitle="The limits every transfer recommendation has to respect">
           <div className="flex flex-col gap-2 text-[13px]">
-            <Row label="Enabled" value={topology.transfers?.enabled ? "Yes" : "No"} />
-            <Row label="Scope" value={String(topology.transfers?.scope ?? "—")} />
-            <Row label="Lead days"
+            <Row label="Transfers allowed" value={topology.transfers?.enabled ? "Yes" : "No"} />
+            <Row label="How far stock can move"
+                 value={SCOPE_WORDS[String(topology.transfers?.scope)]
+                        ?? String(topology.transfers?.scope ?? "—")} />
+            <Row label="Days in transit"
                  value={(topology.transfers?.lead_days ?? []).join("–") || "—"} />
-            <Row label="Cost per unit" value={money(topology.transfers?.cost_per_unit)} />
-            <Row label="Donor must retain"
-                 value={`${topology.transfers?.min_donor_cover_days ?? "—"} days of cover`} />
+            <Row label="Cost per unit moved" value={money(topology.transfers?.cost_per_unit)} />
+            <Row label="Sending store must keep"
+                 value={`${topology.transfers?.min_donor_cover_days ?? "—"} days of stock`} />
           </div>
           <Note>
-            The donor floor is the constraint that stops rebalancing simply moving
-            a stockout to the store that helped — which would net to zero while
-            looking like a saving.
+            That last rule matters most. Without it a transfer just moves the
+            shortage to the store that helped out — no better off overall, but it
+            would still look like a saving on this screen.
           </Note>
         </Card>
       </div>

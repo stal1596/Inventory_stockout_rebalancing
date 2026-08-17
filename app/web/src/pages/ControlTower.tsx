@@ -16,7 +16,7 @@ export function ControlTower() {
 
   return (
     <div className="flex flex-col gap-5">
-      <Loadable state={kpis} label="Loading the network position…">
+      <Loadable state={kpis} label="Checking where things stand…">
         {(data) => {
           const h7 = data.horizons["7"];
           const h14 = data.horizons["14"];
@@ -24,50 +24,59 @@ export function ControlTower() {
           return (
             <>
               <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                <Kpi label="Positions at risk" value={num(data.skus_at_risk)}
+                <Kpi label="Products at risk" value={num(data.skus_at_risk)}
                      tone={bandColor.High}
-                     sub={`of ${num(data.positions_open)} open store × SKU`}
-                     hint="Critical or High band: likely to run out AND expensive when it does." />
-                <Kpi label="Value at risk" value={money(data.inventory_value_at_risk)}
-                     sub="expected lost revenue, 14 days"
-                     hint="Expected days out of stock × demand rate × price." />
-                <Kpi label="Stock out ≤ 7 days" value={num(h7.positions)}
-                     tone={bandColor.Critical} sub={money(h7.revenue) + " exposed"} />
-                <Kpi label="Stock out ≤ 14 days" value={num(h14.positions)}
-                     sub={money(h14.revenue) + " exposed"} />
-                <Kpi label="Stock out ≤ 28 days" value={num(h28.positions)}
-                     sub={money(h28.revenue) + " exposed"} />
+                     sub={`of ${num(data.positions_open)} we are watching`}
+                     hint="Products marked Critical or High: likely to run out, and costly when they do. Every product is watched separately in every store, because the same shoe can be fine in one shop and nearly gone in another." />
+                <Kpi label="Revenue at risk" value={money(data.inventory_value_at_risk)}
+                     sub="over the next 14 days"
+                     hint="The sales we expect to lose if nothing changes — how long each product sits unavailable, multiplied by how fast it sells and what it sells for." />
+                <Kpi label="Running out within a week" value={num(h7.positions)}
+                     tone={bandColor.Critical} sub={money(h7.revenue) + " of sales at stake"}
+                     hint="More likely than not to sell out inside 7 days. These are the ones worth acting on today." />
+                <Kpi label="Within a fortnight" value={num(h14.positions)}
+                     sub={money(h14.revenue) + " of sales at stake"} />
+                <Kpi label="Within four weeks" value={num(h28.positions)}
+                     sub={money(h28.revenue) + " of sales at stake"} />
 
-                <Kpi label="On hand" value={num(data.inventory_on_hand_units)}
-                     sub={`${num(data.inventory_at_dc_units)} at DC · ${num(data.inventory_inbound_units)} inbound`} />
-                <Kpi label="Median days of supply" value={data.median_days_of_supply ?? "—"}
-                     sub={`turnover ${data.inventory_turnover}× annualised`} />
+                <Kpi label="Units in stores" value={num(data.inventory_on_hand_units)}
+                     sub={`${num(data.inventory_at_dc_units)} at the warehouse · ${num(data.inventory_inbound_units)} on the way`}
+                     hint="Units sitting on shop floors right now. The warehouse and in-transit figures are the cover behind them." />
+                {/* Turnover moved into the hint on purpose: it reads ~31x on this
+                    extract, which is high even for fast footwear, and it should
+                    not be a headline until it is checked against real figures. */}
+                <Kpi name="median_days_of_supply" value={data.median_days_of_supply ?? "—"}
+                     sub={`the middle product, at today's selling rate`}
+                     hint={`Half of all products have more days of stock than this, half have less. Stock turns over about ${data.inventory_turnover}× a year.`} />
                 {/* The value was fetched and never shown; units alone do not say
                     how much capital the excess ties up. */}
-                <Kpi label="Excess inventory" value={num(data.excess_inventory_units)}
-                     sub={`${money(data.excess_inventory_value)} · beyond 60 days of cover`} />
+                <Kpi label="Overstocked" value={num(data.excess_inventory_units)}
+                     sub={`${money(data.excess_inventory_value)} tied up`}
+                     hint="Units beyond 60 days of selling. This is money sitting still — the opposite problem to the one at the top of this page, and often the source of a transfer." />
                 {/* Not the whole order table — order lines placed but not yet due
                     to have landed, resolved against the inferred lead time. */}
-                <Kpi label="Open replenishment" value={num(data.open_replenishment_orders)}
-                     sub="order lines not yet due to arrive" />
-                <Kpi label="Supplier on-time"
+                <Kpi label="Orders on the way" value={num(data.open_replenishment_orders)}
+                     sub="placed, not yet due to arrive"
+                     hint="Order lines that have been placed but are not yet due to land, judged against how long delivery normally takes." />
+                <Kpi label="Suppliers on time"
                      value={data.supplier_available ? pct(data.supplier_on_time_rate) : "n/a"}
                      tone={data.supplier_on_time_rate && data.supplier_on_time_rate < 0.8
                        ? bandColor.High : undefined}
-                     sub={data.supplier_available ? "across all vendors" : "needs goods-receipt date"} />
+                     sub={data.supplier_available ? "across all suppliers" : "no delivery dates recorded"}
+                     hint="Share of deliveries that arrived by the date the supplier promised. Late suppliers are why a buffer is needed at all." />
               </div>
 
               <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] gap-5 mt-5">
-                <Card title="Risk feed"
-                      subtitle="Generated from the scored population — every item drills through">
-                  <Loadable state={alerts} label="Reading the feed…">
+                <Card title="What needs attention"
+                      subtitle="Worst first. Click any line to open the products behind it.">
+                  <Loadable state={alerts} label="Checking what needs attention…">
                     {(feed) => <AlertList alerts={feed.alerts} />}
                   </Loadable>
                 </Card>
 
                 <div className="flex flex-col gap-5">
-                  <Card title="Risk profile"
-                        subtitle="Every open position, banded by likelihood and consequence">
+                  <Card title="How urgent is the book?"
+                        subtitle="Every product we watch, sorted into four levels of urgency">
                     <div className="flex flex-col gap-3">
                       {data.bands.map((band) => {
                         const share = data.positions_open
@@ -99,22 +108,23 @@ export function ControlTower() {
                       })}
                     </div>
                     <Note>
-                      A band combines likelihood with consequence. Ranking on
-                      probability alone sends planners at the SKUs most likely to
-                      run out rather than the ones whose running out matters —
-                      the two orderings pick largely different SKUs, which is the
-                      reason to band rather than sort.
+                      Urgency is not the same as likelihood. A cheap size that is
+                      certain to sell out matters less than a best-seller that
+                      probably will, so these levels weigh how likely a shortage
+                      is against what it costs. Sorting on likelihood alone sends
+                      you after a noticeably different set of products.
                     </Note>
                   </Card>
 
-                  <Card title="Inventory and demand" subtitle="Network totals, last 120 days">
-                    <Loadable state={trend} label="Aggregating the panel…">
+                  <Card title="Stock and sales"
+                        subtitle="Across every store, over the last 120 days">
+                    <Loadable state={trend} label="Adding up the last 120 days…">
                       {(series) => (
                         <>
                           <TrendChart data={series.series} height={200} />
                           <div className="flex items-center gap-4 mt-2 text-[11px]"
                                style={{ color: "var(--text-muted)" }}>
-                            <Legend color="var(--series-1)" label="Units on hand" />
+                            <Legend color="var(--series-1)" label="Units in stores" />
                             <Legend color="var(--series-2)" label="Units sold" />
                           </div>
                         </>
@@ -139,6 +149,13 @@ function Legend({ color, label }: { color: string; label: string }) {
     </span>
   );
 }
+
+/** The server's severities are lowercase machine words; these are for reading. */
+const SEVERITY_WORD: Record<string, string> = {
+  critical: "Act today",
+  warning: "Worth a look",
+  info: "For information",
+};
 
 function AlertList({ alerts }: { alerts: Alert[] }) {
   const navigate = useNavigate();
@@ -211,7 +228,7 @@ function AlertList({ alerts }: { alerts: Alert[] }) {
               <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded"
                     style={{ color: severityColor[alert.severity],
                              background: `color-mix(in srgb, ${severityColor[alert.severity]} 14%, transparent)` }}>
-                {alert.severity}
+                {SEVERITY_WORD[alert.severity] ?? alert.severity}
               </span>
             </span>
             <span className="block text-[12px] mt-0.5 leading-relaxed"

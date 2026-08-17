@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api } from "../lib/api";
 import { days, num, pct } from "../lib/format";
-import { Card, Empty, ErrorState, Kpi, Note, Spinner, Table } from "./ui";
+import { Card, Empty, ErrorState, InfoHint, Kpi, Note, Spinner, Table, TermLabel } from "./ui";
 import { StockoutHistogram } from "./charts";
 import { useApi } from "../lib/useApi";
 import { useStore } from "../store";
@@ -54,16 +54,19 @@ export function PopulationPanel() {
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center gap-2">
-        <Select label="Positions" value={String(limit)} onChange={(v) => setLimit(Number(v))}
+        <Select label="Products" value={String(limit)} onChange={(v) => setLimit(Number(v))}
                 options={[50, 200, 500].map((n) => [String(n), String(n), affordable(n, horizon, paths)])} />
-        <Select label="Horizon" value={String(horizon)} onChange={(v) => setHorizon(Number(v))}
+        <Select label="Look ahead" value={String(horizon)} onChange={(v) => setHorizon(Number(v))}
                 options={[14, 28, 56].map((n) => [String(n), `${n} days`, affordable(limit, n, paths)])} />
-        <Select label="Paths" value={String(paths)} onChange={(v) => setPaths(Number(v))}
+        <Select label="Runs each" value={String(paths)} onChange={(v) => setPaths(Number(v))}
                 options={[200, 500, 1000, 2000].map(
                   (n) => [String(n), n.toLocaleString(), affordable(limit, horizon, n)])} />
-        <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-          Ranked by exposure. Filters set on the risk table apply here.
-          {" "}{(pathDays / 1e6).toFixed(1)}M of {PATH_DAY_BUDGET / 1e6}M path-days.
+        <span className="text-[11px] inline-flex items-center gap-1.5"
+              style={{ color: "var(--text-muted)" }}>
+          Worst first, by money at stake. Filters from the risk table apply here.
+          <InfoHint
+            text={`Bigger settings take longer. This run is using ${(pathDays / 1e6).toFixed(1)}M of the ${PATH_DAY_BUDGET / 1e6}M we allow in one go — options past the limit are greyed out rather than left to fail.`}
+            technical={`${limit} positions × ${horizon} days × ${paths} paths (path-day budget)`} />
         </span>
       </div>
 
@@ -72,42 +75,53 @@ export function PopulationPanel() {
       {population.error && (
         <ErrorState message={population.error} onRetry={population.refetch} />
       )}
-      {!population.error && !population.data && <Spinner label="Walking every position forward…" />}
+      {!population.error && !population.data && <Spinner label="Playing every product forward…" />}
 
       {population.data && !population.error && (
         <>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <Kpi label="Mean stockout probability"
+            <Kpi label="Average chance of running out"
                  value={pct(population.data.aggregate.p_stockout_mean, 1)}
-                 sub={`over ${population.data.horizon} days`} />
-            <Kpi label="More likely than not"
+                 sub={`in the next ${population.data.horizon} days`}
+                 hint="Averaged across every product in this slice. A single product's own chance can be far higher or lower." />
+            <Kpi label="More likely than not to run out"
                  value={num(population.data.aggregate.positions_likely_out)}
                  tone="var(--status-serious)"
-                 sub={`of ${num(population.data.positions)} simulated`} />
-            <Kpi label="Expected unmet demand"
+                 sub={`of ${num(population.data.positions)} played forward`} />
+            <Kpi name="expected_unmet_units" label="Sales we'd miss"
                  value={num(population.data.aggregate.expected_unmet_units)}
-                 sub="units across the slice" />
-            <Kpi label="Mean days out"
+                 sub="units across this slice" />
+            <Kpi label="Days with empty shelves"
                  value={days(population.data.aggregate.expected_days_out_mean)}
-                 sub="per position, in the window" />
+                 sub="per product, on average"
+                 hint="How many days of the window a typical product in this slice spends unavailable to buy." />
           </div>
 
-          <Card title="How the exposure builds"
-                subtitle="Share of the slice expected to be out by each horizon">
+          <Card title="How the exposure builds up"
+                subtitle="Share of this slice expected to have run out by each point">
             {population.data.aggregate.by_horizon.length ? (
               <StockoutHistogram
                 data={population.data.aggregate.by_horizon.map((h) => ({
                   day: h.day, share: h.share,
                 }))}
                 height={180} />
-            ) : <Empty>No cumulative horizon inside this window.</Empty>}
+            ) : <Empty>Nothing runs out inside this window.</Empty>}
             <Note>{population.data.note}</Note>
           </Card>
 
-          <Card title="Positions by simulated risk"
-                subtitle={`${num(population.data.positions)} positions · ${num(population.data.paths)} paths each`}>
-            <Table head={["SKU", "Store", "On hand", "In transit", "Demand/day",
-                          "P(out)", "P10", "P50", "P90", "Unmet"]}>
+          <Card title="Product by product"
+                subtitle={`${num(population.data.positions)} products · ${num(population.data.paths)} runs each`}>
+            <Table head={[
+              "Product", "Store",
+              <TermLabel key="stock" name="stock_on_hand" />,
+              <TermLabel key="transit" name="committed_units" label="On its way" />,
+              <TermLabel key="rate" name="trailing_demand_rate" label="Sells a day" />,
+              <TermLabel key="p" name="p_stockout" label="Runs out" />,
+              <TermLabel key="p10" name="days_to_stockout_p10" label="Earliest" />,
+              <TermLabel key="p50" name="days_to_stockout_p50" label="Typical" />,
+              <TermLabel key="p90" name="days_to_stockout_p90" label="Latest" />,
+              <TermLabel key="unmet" name="expected_unmet_units" label="Missed" />,
+            ]}>
               {population.data.rows.map((row) => (
                 <tr key={`${row.store_id}-${row.sku_uid}`}
                     style={{ borderBottom: "1px solid var(--border)" }}>
@@ -138,9 +152,8 @@ export function PopulationPanel() {
               ))}
             </Table>
             <Note>
-              A dash in P10/P50/P90 means that percentile is not identified —
-              fewer than that share of paths ran out at all, so quoting a date
-              would invent one.
+              A dash under Earliest, Typical or Latest means too few runs sold
+              out to put a date on it. Quoting one would be inventing it.
             </Note>
           </Card>
         </>

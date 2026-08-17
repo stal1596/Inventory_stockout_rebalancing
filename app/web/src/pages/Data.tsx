@@ -1,6 +1,7 @@
 import { api } from "../lib/api";
-import { num } from "../lib/format";
-import { Card, ErrorState, Note, Spinner, Table } from "../components/ui";
+import { featureLabel, num } from "../lib/format";
+import { Card, ErrorState, InfoHint, Note, Spinner, Table } from "../components/ui";
+import { term } from "../lib/glossary";
 import { useApi } from "../lib/useApi";
 
 /**
@@ -15,7 +16,7 @@ export function Data() {
   const state = useApi(() => api.provenance(), []);
 
   if (state.error) return <ErrorState message={state.error} onRetry={state.refetch} />;
-  if (!state.data) return <Spinner label="Reading the data contract…" />;
+  if (!state.data) return <Spinner label="Checking where the data comes from…" />;
 
   const provenance = state.data;
   const missing = provenance.tables.filter((t) => !t.in_supplied_extract);
@@ -23,18 +24,26 @@ export function Data() {
 
   return (
     <div className="flex flex-col gap-5">
-      <Card title="Model" subtitle="What is behind every number in this application">
+      <Card title="What is behind the numbers"
+            subtitle="How the forecasting was built, and how well it holds up">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <Fact label="Family" value={provenance.model.family} />
-          <Fact label="Held-out C-index" value={String(provenance.model.c_index)} />
-          <Fact label="Spells trained"
-                value={`${num(provenance.model.spells_train)} / ${num(provenance.model.spells_test)} test`} />
-          <Fact label="Features" value={String(provenance.model.features.length)} />
+          <Fact label="Method" value="Survival analysis"
+                hint="The same maths used to estimate how long something lasts before it fails — here, how long stock lasts before the shelf empties."
+                technical={provenance.model.family} />
+          <Fact label="Ranking accuracy" value={`${(provenance.model.c_index * 100).toFixed(0)}%`}
+                hint="Given two products, how often it correctly picks the one that runs out first — measured on data it never saw while learning. A coin flip would score 50%."
+                technical={`Held-out C-index ${provenance.model.c_index}`} />
+          <Fact label="Learned from"
+                value={`${num(provenance.model.spells_train)} runs of stock`}
+                hint={`Each one is a stretch where a product sat in a store between deliveries. A further ${num(provenance.model.spells_test)} were held back to test against.`} />
+          <Fact label="Things it looks at" value={String(provenance.model.features.length)}
+                hint="Listed in full at the bottom of this page." />
         </div>
         <Note>
-          The split is chronological, not random: a random split would put spells
-          from the same store, SKU and week on both sides and inflate every
-          metric. Train ends {provenance.model.split_date}.
+          It learned from the past and was tested on the future, never the other
+          way round. Shuffling the two would put the same store, product and week
+          on both sides and flatter every figure on this page. Learning stops at{" "}
+          {provenance.model.split_date}.
         </Note>
       </Card>
 
@@ -115,31 +124,44 @@ export function Data() {
         </Table>
       </Card>
 
-      <Card title="Model inputs" subtitle="Every feature the survival model reads">
+      <Card title="What it looks at"
+            subtitle="Everything taken into account when judging a product's risk">
         <div className="flex flex-wrap gap-1.5">
-          {provenance.model.features.map((feature: string) => (
-            <span key={feature} className="text-[11px] rounded px-2 py-1"
-                  style={{ background: "var(--surface-3)", color: "var(--text-secondary)" }}>
-              {feature}
-            </span>
-          ))}
+          {/* These printed as raw identifiers -- `log_days_of_cover` and friends
+              -- even though the translation map already existed and was used on
+              the Risk page. */}
+          {provenance.model.features.map((feature: string) => {
+            const found = term(feature);
+            return (
+              <span key={feature}
+                    className="text-[11px] rounded px-2 py-1 inline-flex items-center gap-1"
+                    style={{ background: "var(--surface-3)", color: "var(--text-secondary)" }}>
+                {featureLabel(feature)}
+                {found && <InfoHint text={found.help} technical={found.technical} />}
+              </span>
+            );
+          })}
         </div>
         <Note>
-          Every one is computable at the moment a decision is made. A test
-          multiplies all sales from the decision point onward by 100 and asserts
-          that not one feature moves, which is a mechanical proof of no
-          look-ahead rather than a code review.
+          Every one of these can be known at the moment you would make the
+          decision — none of them peek at what happened next. That is checked
+          mechanically: a test multiplies all later sales by 100 and asserts not
+          one of these figures moves.
         </Note>
       </Card>
     </div>
   );
 }
 
-function Fact({ label, value }: { label: string; value: string }) {
+function Fact({ label, value, hint, technical }: {
+  label: string; value: string; hint?: string; technical?: string;
+}) {
   return (
     <div className="rounded-md px-3 py-2.5" style={{ background: "var(--surface-3)" }}>
-      <p className="text-[10px] uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+      <p className="text-[10px] uppercase tracking-wider inline-flex items-center gap-1"
+         style={{ color: "var(--text-muted)" }}>
         {label}
+        {hint && <InfoHint text={hint} technical={technical} />}
       </p>
       <p className="text-[14px] font-medium mt-0.5">{value}</p>
     </div>

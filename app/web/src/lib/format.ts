@@ -1,4 +1,5 @@
 import type { Band } from "./api";
+import { prettify, term } from "./glossary";
 
 export const num = (value: number | null | undefined, digits = 0) =>
   value === null || value === undefined || !Number.isFinite(value)
@@ -43,41 +44,15 @@ export const severityColor: Record<string, string> = {
   info: "var(--series-1)",
 };
 
-/** Feature names are engineering identifiers; planners read English. */
-const FEATURE_LABELS: Record<string, string> = {
-  log_days_of_cover: "Days of cover",
-  days_of_cover: "Days of cover",
-  log_start_stock: "Stock on hand",
-  log_trailing_demand: "Demand rate",
-  trailing_demand_rate: "Demand rate",
-  demand_acceleration: "Demand accelerating",
-  demand_cv: "Demand volatility",
-  intermittency: "Intermittent demand",
-  size_run_completeness: "Size run broken",
-  size_extremity: "Size at run edge",
-  intransit_units: "Stock in transit",
-  dc_stock_for_sku: "DC stock",
-  log_dc_stock: "DC stock",
-  open_order_qty: "Recently ordered",
-  days_since_last_receipt: "Days since delivery",
-  prior_stockouts_90d: "Past stockouts",
-  prior_stockout_rate: "Stockout history",
-  store_stockout_rate_90d: "Store performance",
-  promo_days_ahead: "Promotion ahead",
-  holiday_days_ahead: "Holiday ahead",
-  seasonality_index: "Seasonality",
-  starts_on_weekend: "Weekend start",
-  forecast_units_month: "Forecast volume",
-  forecast_vs_trailing: "Forecast vs actual",
-  lead_time: "Supplier lead time",
-  log_price: "Unit price",
-  tier_rank: "Store tier",
-  demand_rate_imputed: "Demand estimated",
-};
-
-export const featureLabel = (name: string) =>
-  FEATURE_LABELS[name] ??
-  name.replace(/^log_/, "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+/**
+ * Feature names are engineering identifiers; planners read English.
+ *
+ * The map itself now lives in `glossary.ts` alongside every other label, because
+ * four of these names (`trailing_demand_rate`, `intransit_units`,
+ * `dc_stock_for_sku`, `lead_time`) are also risk-table columns and were being
+ * named twice, in two files, with nothing keeping the two spellings in step.
+ */
+export const featureLabel = (name: string) => term(name)?.label ?? prettify(name);
 
 export const ACTION_COLORS: Record<string, string> = {
   rebalance_from_store: "var(--series-3)",

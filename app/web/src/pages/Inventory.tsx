@@ -1,6 +1,8 @@
 import { api } from "../lib/api";
 import { days, money, num, pct } from "../lib/format";
-import { Card, Empty, ErrorState, Kpi, Note, Spinner, Table } from "../components/ui";
+import {
+  Card, Empty, ErrorState, InfoHint, Kpi, Note, Spinner, Table, TermLabel,
+} from "../components/ui";
 import { useApi } from "../lib/useApi";
 import { useEffect } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -31,7 +33,7 @@ export function Inventory() {
   }, [hash, loaded]);
 
   if (state.error) return <ErrorState message={state.error} onRetry={state.refetch} />;
-  if (!state.data) return <Spinner label="Aggregating the panel…" />;
+  if (!state.data) return <Spinner label="Adding up what you're holding…" />;
 
   const summary = state.data;
   const supplier = summary.supplier;
@@ -46,21 +48,25 @@ export function Inventory() {
   return (
     <div className="flex flex-col gap-5">
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <Kpi label="On hand" value={num(summary.on_hand_units)} sub="units in stores" />
-        <Kpi label="At DC" value={num(summary.dc_units)} sub="units upstream" />
-        <Kpi label="In transit" value={num(summary.intransit_units)} sub="units inbound" />
-        <Kpi label="Excess" value={num(summary.excess_units)} sub="beyond 60 days of cover" />
-        <Kpi label="Turnover" value={`${summary.turnover}×`}
-             sub={`median cover ${summary.median_days_of_supply ?? "—"}d`} />
+        <Kpi label="In stores" value={num(summary.on_hand_units)} sub="units on shop floors" />
+        <Kpi label="At the warehouse" value={num(summary.dc_units)} sub="units held back"
+             hint="Stock at the distribution centres. This is the cover behind the stores — the first place to look when one shop runs short." />
+        <Kpi label="On the way" value={num(summary.intransit_units)} sub="units already shipped"
+             hint="Units dispatched and expected to land. Stock ordered but not yet dispatched is not counted." />
+        <Kpi label="Overstocked" value={num(summary.excess_units)} sub="beyond 60 days of selling"
+             hint="Units that will not sell for two months at the current rate. Often the best source for a transfer to a store that is running short." />
+        <Kpi name="inventory_turnover" label="Stock turnover" value={`${summary.turnover}×`}
+             sub={`typical product has ${summary.median_days_of_supply ?? "—"} days left`} />
       </div>
 
-      <Card id="demand" title="Inventory and demand" subtitle="Network totals, last 180 days">
+      <Card id="demand" title="Stock and sales"
+            subtitle="Across every store, over the last 180 days">
         {trendFailure ?? <>
           <TrendChart data={trend} height={230} />
           <div className="flex items-center gap-4 mt-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
             <span className="flex items-center gap-1.5">
               <span className="w-2.5 h-2.5 rounded-sm" style={{ background: "var(--series-1)" }} />
-              Units on hand
+              Units in stores
             </span>
             <span className="flex items-center gap-1.5">
               <span className="w-2.5 h-2.5 rounded-sm" style={{ background: "var(--series-2)" }} />
@@ -70,67 +76,78 @@ export function Inventory() {
         </>}
       </Card>
 
-      <Card id="supply" title="Supply into the network"
-            subtitle="Goods received, and the DC depth behind them">
+      <Card id="supply" title="Stock coming in"
+            subtitle="What arrived in stores, and how much cover sat behind it at the warehouse">
         {trendFailure ?? <>
           <SupplyChart data={trend} height={200} />
           <div className="flex items-center gap-4 mt-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
             <span className="flex items-center gap-1.5">
               <span className="w-2.5 h-2.5 rounded-sm" style={{ background: "var(--series-1)" }} />
-              Units received
+              Units delivered to stores
             </span>
             <span className="flex items-center gap-1.5">
               <span className="w-2.5 h-2.5 rounded-sm" style={{ background: "var(--series-2)" }} />
-              DC stock
+              Units at the warehouse
             </span>
           </div>
         </>}
         <Note>
-          Both series arrive with the demand panel and were previously fetched
-          and discarded. Receipts are INFERRED from consecutive-day stock rises,
-          not read from order dates — the extract records when an order was
-          placed, never when it landed.
+          Deliveries are worked out by spotting the days a store's stock jumped
+          up, because the records say when an order was placed but never when it
+          landed.
         </Note>
       </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <Card title="Days of supply" subtitle="How many positions sit in each cover band">
+        <Card title="How long stock will last"
+              subtitle="How many products fall into each band of days remaining">
           <DistributionChart data={summary.cover_distribution} xKey="bucket" yKey="positions"
                              colors={coverColors} height={200} />
           <Note>
-            Cover is stock divided by the trailing demand rate. Positions under 7
-            days are the ones a replenishment cycle may not reach in time.
+            Days left is simply the stock on the shelf divided by how fast it has
+            been selling. Anything under 7 days is unlikely to be reached by a
+            normal delivery cycle in time.
           </Note>
         </Card>
 
-        <Card title="Forecast versus actual"
+        <Card title="Forecast versus what actually sold"
               subtitle={forecast?.available
-                ? `Bias ${forecast.bias?.toFixed(2)}× · median absolute error ${pct(forecast.mape, 0)}`
+                ? <span className="inline-flex flex-wrap items-center gap-x-1">
+                    The forecast runs {forecast.bias ? `${forecast.bias.toFixed(2)}×` : "—"} actual sales
+                    and is typically {pct(forecast.mape, 0)} out
+                    <InfoHint
+                      text="Below 1.00× the forecast under-calls demand; above it, over-calls. The second figure is how far off it usually lands, either way."
+                      technical={`bias ${forecast.bias?.toFixed(2)}× · MAPE ${pct(forecast.mape, 0)}`} />
+                  </span>
                 : "Not available"}>
           {forecast?.available
             ? <ForecastChart data={forecast.weeks} height={200} />
             : <Empty>No store-week forecast in this extract.</Empty>}
           <Note>
-            The source forecast is monthly and national. This is that plan
-            allocated to store × week by each store's historical demand share, so
-            it inherits the national forecast's error rather than inventing a
-            better one.
+            The original forecast is monthly and covers the whole country. What
+            you see here is that same plan split down to each store and week
+            using its usual share of sales — so it carries the national
+            forecast's error rather than pretending to a better one.
           </Note>
         </Card>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <Card title="Supplier performance"
+        <Card title="Are suppliers keeping their promises?"
               subtitle={supplier.available
-                ? "Promised against actual, from goods receipts"
-                : "Cannot be measured"}>
+                ? "What each supplier promised against what they actually delivered"
+                : "Cannot be measured from this data"}>
           {!supplier.available ? (
             <div className="rounded-md p-4 text-[13px] leading-relaxed"
                  style={{ background: "var(--surface-3)", color: "var(--text-secondary)" }}>
               {supplier.reason}
             </div>
           ) : (
-            <Table head={["Vendor", "On time", "Promised", "Actual", "σ", "Receipts"]}>
+            <Table head={[
+              "Supplier", "On time", "Promised", "Actually took",
+              <TermLabel key="swing" name="lead_sigma" label="Swing" />,
+              "Deliveries",
+            ]}>
               {supplier.vendors.map((vendor: any) => (
                 <tr key={vendor.vendor} style={{ borderBottom: "1px solid var(--border)" }}>
                   <td className="py-2 pr-4">{vendor.vendor}</td>
@@ -150,29 +167,33 @@ export function Inventory() {
             </Table>
           )}
           <Note>
-            The supplied extract has no goods-receipt date, so this is not
-            computable there at all. The synthetic feed emits one, which is what
-            makes on-time performance measurable here.
+            This needs a recorded delivery date for every shipment. Where that
+            is missing from the source data, supplier performance cannot be
+            measured at all and this panel says so rather than guessing.
           </Note>
         </Card>
 
-        <Card id="lead-time" title="Lead time, DC to store"
-              subtitle="Observed against inferred — two routes to the same number">
+        <Card id="lead-time" title="How long deliveries take, warehouse to store"
+              subtitle="Two independent ways of measuring it, as a cross-check">
           {lead.histogram?.length
             ? <DistributionChart data={lead.histogram} xKey="days" yKey="receipts" height={180} />
             : <Empty>No receipts to chart.</Empty>}
           <div className="grid grid-cols-2 gap-3 mt-3">
             <div className="rounded-md px-3 py-2" style={{ background: "var(--surface-3)" }}>
-              <p className="text-[10px] uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
-                Observed
+              <p className="text-[10px] uppercase tracking-wider inline-flex items-center gap-1"
+                 style={{ color: "var(--text-muted)" }}>
+                From delivery records
+                <InfoHint text="Taken straight from recorded goods-receipt dates." />
               </p>
               <p className="text-[15px] font-semibold tnum">
                 {lead.observed ? `${lead.observed.mean}d ± ${lead.observed.std}` : "—"}
               </p>
             </div>
             <div className="rounded-md px-3 py-2" style={{ background: "var(--surface-3)" }}>
-              <p className="text-[10px] uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
-                Inferred
+              <p className="text-[10px] uppercase tracking-wider inline-flex items-center gap-1"
+                 style={{ color: "var(--text-muted)" }}>
+                From stock movements
+                <InfoHint text="Worked out by spotting the days stock jumped up in a store. This is the figure the model uses, because a real extract rarely records delivery dates at all — the two agreeing this closely is what makes it trustworthy." />
               </p>
               <p className="text-[15px] font-semibold tnum">
                 {lead.inferred.mean ? `${lead.inferred.mean}d ± ${lead.inferred.std}` : "—"}
@@ -183,8 +204,8 @@ export function Inventory() {
         </Card>
       </div>
 
-      <Card title="Inventory by store" subtitle="Where the stock and the excess sit">
-        <Table head={["Store", "SKUs", "On hand", "Excess units", "Excess share", ""]}>
+      <Card title="Stock by store" subtitle="Where the stock sits, and where it is sitting still">
+        <Table head={["Store", "Products", "In store", "Overstocked", "Share overstocked", ""]}>
           {summary.by_store.map((store) => (
             <tr key={store.store_id} style={{ borderBottom: "1px solid var(--border)" }}>
               <td className="py-2 pr-4 font-medium">{store.store_id}</td>

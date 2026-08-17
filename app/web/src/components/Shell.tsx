@@ -1,31 +1,92 @@
 import { NavLink, useLocation } from "react-router-dom";
 import { useEffect, useState, type ReactNode } from "react";
 import { useStore } from "../store";
+import { InfoHint } from "./ui";
 
 /**
- * The nav is ordered as the analytical journey, not alphabetically or by
- * frequency: descriptive -> predictive -> simulation -> prescriptive. A user who
+ * The nav is ordered as the working day, not alphabetically or by frequency:
+ * where you stand -> what is coming -> how sure we are -> what to do. A user who
  * reads it top to bottom has read the argument.
+ *
+ * Each entry also carries the one-line `intro` shown under the page title. It
+ * lives here rather than in eleven page files so that adding a page and
+ * explaining it are the same edit.
  */
-const JOURNEY = [
-  { to: "/", label: "Control Tower", stage: "Overview", end: true },
-  { to: "/inventory", label: "Inventory & Demand", stage: "Descriptive" },
-  { to: "/risk", label: "Stockout Risk", stage: "Predictive" },
-  { to: "/simulate", label: "Simulation", stage: "Uncertainty" },
-  { to: "/prescribe", label: "Recommendations", stage: "Prescriptive" },
+interface NavItem {
+  to: string;
+  label: string;
+  stage?: string;
+  intro: string;
+  end?: boolean;
+}
+
+const JOURNEY: NavItem[] = [
+  {
+    to: "/", label: "Control Tower", stage: "Where you stand", end: true,
+    intro: "How the network looks this morning. Start here, then follow anything that looks wrong.",
+  },
+  {
+    to: "/inventory", label: "Inventory & Demand", stage: "What you hold",
+    intro: "What you are holding, what is selling, and how reliably your suppliers deliver.",
+  },
+  {
+    to: "/risk", label: "Stockout Risk", stage: "What's coming",
+    intro: "The products most likely to run out, worst first. Pick one to see why, and what to do about it.",
+  },
+  {
+    to: "/simulate", label: "Simulation", stage: "How sure we are",
+    intro: "We play the next few weeks out thousands of times to see when a product runs out — and how much that answer could move.",
+  },
+  {
+    to: "/prescribe", label: "Recommendations", stage: "What to do",
+    intro: "Move stock, chase a delivery, or leave it alone. Every option is priced against doing nothing.",
+  },
   // Last, and distinct from the step before it: a recommendation is a one-off
   // action, a reorder point is the standing rule that stops it recurring.
-  { to: "/policy", label: "Reorder Policy", stage: "Standing policy" },
+  {
+    to: "/policy", label: "Reorder Policy", stage: "The standing rule",
+    intro: "When to reorder each product, so the same shortage does not come back next month.",
+  },
 ];
 
-// Evidence, not workflow. `/data` stays first so the breadcrumb's `startsWith`
-// match never resolves a longer path to it.
-const REFERENCE = [
-  { to: "/network", label: "Supply Network" },
-  { to: "/data", label: "Data & Model" },
-  { to: "/evidence", label: "Model Evidence" },
-  { to: "/quality", label: "Data Quality" },
-  { to: "/backtests", label: "Backtests" },
+// Reference, not workflow. `/data` stays before longer paths so the breadcrumb's
+// `startsWith` match never resolves one of them to it.
+const REFERENCE: NavItem[] = [
+  {
+    to: "/network", label: "Supply Network",
+    intro: "Which warehouse serves which store, and how each supplier is performing.",
+  },
+  {
+    to: "/data", label: "Data & Model",
+    intro: "Where each figure comes from, and which parts are measured rather than assumed.",
+  },
+  {
+    to: "/glossary", label: "What the numbers mean",
+    intro: "Every number in the product, in plain English.",
+  },
+];
+
+/**
+ * Model diagnostics. Kept in full and kept reachable, but out of the daily path.
+ *
+ * These pages exist to prove the model works, and they are dense with the
+ * vocabulary that does it -- calibration, concordance, competing risks. That is
+ * the right language for the person auditing the thing and the wrong language to
+ * put in front of a planner deciding what to move today.
+ */
+const ADVANCED: NavItem[] = [
+  {
+    to: "/evidence", label: "Model Evidence",
+    intro: "How the model scores on data it never saw while learning, and where it is weakest.",
+  },
+  {
+    to: "/quality", label: "Data Quality",
+    intro: "Whether the stock records add up, and what it means when they do not.",
+  },
+  {
+    to: "/backtests", label: "Backtests",
+    intro: "Rewind to a past date, run the predictions again, and check them against what actually happened.",
+  },
 ];
 
 export function Shell({ children, asOf, cIndex }: {
@@ -65,7 +126,7 @@ export function Shell({ children, asOf, cIndex }: {
         <nav className="flex flex-col gap-0.5">
           <p className="px-2 pb-1 text-[10px] uppercase tracking-wider font-semibold"
              style={{ color: "var(--text-muted)" }}>
-            Analytical journey
+            Your working day
           </p>
           {JOURNEY.map((item, index) => (
             <NavLink key={item.to} to={item.to} end={item.end}
@@ -107,6 +168,32 @@ export function Shell({ children, asOf, cIndex }: {
           ))}
         </nav>
 
+        {/* Collapsed by default, but forced open when the current route is
+            inside it -- otherwise navigating to Model Evidence lands you on a
+            page whose nav group appears shut. */}
+        <details open={ADVANCED.some((item) => location.pathname.startsWith(item.to))}
+                 className="flex flex-col">
+          <summary className="group px-2 py-1 text-[10px] uppercase tracking-wider font-semibold cursor-pointer list-none flex items-center gap-1.5"
+                   style={{ color: "var(--text-muted)" }}>
+            <span aria-hidden
+                  className="text-[8px] transition-transform group-open:rotate-90">▸</span>
+            Advanced · for analysts
+          </summary>
+          <nav className="flex flex-col gap-0.5 mt-1">
+            {ADVANCED.map((item) => (
+              <NavLink key={item.to} to={item.to}
+                       className="rounded-md px-2 py-2 text-[13px] transition-colors"
+                       style={({ isActive }) => ({
+                         background: isActive ? "var(--surface-3)" : "transparent",
+                         color: isActive ? "var(--text-primary)" : "var(--text-secondary)",
+                         fontWeight: isActive ? 600 : 450,
+                       })}>
+                {item.label}
+              </NavLink>
+            ))}
+          </nav>
+        </details>
+
         {/* The carried selection, visible on every page. This is what makes the
             journey feel continuous rather than like four separate tools. */}
         {selection && (
@@ -142,12 +229,17 @@ export function Shell({ children, asOf, cIndex }: {
           </span>
           <div className="flex items-center gap-5 text-[12px]"
                style={{ color: "var(--text-muted)" }}>
+            {/* This sits on every page in the product, so it was the most-read
+                piece of jargon in it. The number is not lost -- it moved into
+                the hint, where the people who want it will look. */}
             {cIndex !== undefined && (
-              <span className="hidden md:inline"
-                    title="Held-out concordance of the survival model on unseen spells">
-                Model C-index <span className="tnum" style={{ color: "var(--text-secondary)" }}>
-                  {cIndex.toFixed(3)}
-                </span>
+              <span className="hidden md:inline-flex items-center gap-1.5">
+                Model accuracy
+                <span style={{ color: "var(--text-secondary)" }}>{accuracyRead(cIndex)}</span>
+                <InfoHint
+                  text={`Given two products, the model picks the one that runs out first about ${(cIndex * 100).toFixed(0)}% of the time — tested on data it never saw while learning. A coin flip would score 50%.`}
+                  technical={`Held-out C-index ${cIndex.toFixed(3)} — concordance of the log-normal AFT survival model on unseen spells`}
+                />
               </span>
             )}
             {asOf && (
@@ -164,15 +256,34 @@ export function Shell({ children, asOf, cIndex }: {
   );
 }
 
+/**
+ * Page title and the one line saying what the page is for.
+ *
+ * ADVANCED must be in this list or its three pages lose their title and fall
+ * back to reading "Control Tower".
+ */
 function Breadcrumb({ path }: { path: string }) {
-  const all = [...JOURNEY, ...REFERENCE];
+  const all = [...JOURNEY, ...REFERENCE, ...ADVANCED];
   const current = all.find((i) => (i.to === "/" ? path === "/" : path.startsWith(i.to)));
   return (
-    <h1 className="text-[17px] font-semibold tracking-tight">
-      {current?.label ?? "Control Tower"}
-    </h1>
+    <span className="min-w-0">
+      <h1 className="text-[17px] font-semibold tracking-tight leading-tight">
+        {current?.label ?? "Control Tower"}
+      </h1>
+      {current && (
+        <p className="text-[12px] leading-snug mt-0.5 hidden sm:block"
+           style={{ color: "var(--text-muted)" }}>
+          {current.intro}
+        </p>
+      )}
+    </span>
   );
 }
+
+/** A plain read of the model's ranking accuracy, so the header stops leading
+ *  with a statistic most readers cannot place. */
+const accuracyRead = (cIndex: number) =>
+  cIndex >= 0.75 ? "Strong" : cIndex >= 0.65 ? "Good" : "Fair";
 
 /**
  * Three states, not two, and the choice survives a reload.

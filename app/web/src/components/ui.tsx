@@ -1,12 +1,177 @@
-import type { ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { Link } from "react-router-dom";
 import type { Band } from "../lib/api";
 import type { ApiState } from "../lib/useApi";
 import { bandColor, num } from "../lib/format";
+import { prettify, term as lookupTerm } from "../lib/glossary";
+
+const HINT_WIDTH = 288;
+
+/**
+ * The explanatory tooltip.
+ *
+ * Hand-rolled, because the only alternative in the tree is the browser's native
+ * `title` attribute and it fails this job four ways: nothing on screen says a
+ * hint exists, it waits about a second, it never appears on a touch device, and
+ * on a non-interactive `div` most screen readers ignore it. So: a real button
+ * with a visible affordance, opening on hover, focus AND click.
+ *
+ * It renders through a portal on purpose. `Table` wraps its content in
+ * `overflow-x-auto`, which would clip an absolutely-positioned bubble on every
+ * column header -- and column headers are exactly where the jargon lives.
+ */
+export function InfoHint({ text, technical, className = "" }: {
+  text: string;
+  /** The real field name and method, for whoever wants to check our working. */
+  technical?: string;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [box, setBox] = useState<{ top: number; left: number; above: boolean } | null>(null);
+  const anchor = useRef<HTMLButtonElement>(null);
+  const closing = useRef<number | undefined>(undefined);
+  const id = useId();
+
+  const place = useCallback(() => {
+    const el = anchor.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    // Clamped to the viewport so a hint on the last column of a wide table does
+    // not open off the right-hand edge.
+    const left = Math.min(
+      Math.max(8, rect.left + rect.width / 2 - HINT_WIDTH / 2),
+      Math.max(8, window.innerWidth - HINT_WIDTH - 8),
+    );
+    const above = window.innerHeight - rect.bottom < 190;
+    setBox({ top: above ? rect.top - 8 : rect.bottom + 8, left, above });
+  }, []);
+
+  const show = () => {
+    window.clearTimeout(closing.current);
+    place();
+    setOpen(true);
+  };
+  // A short grace period, so moving the pointer from the icon into the bubble
+  // does not dismiss the thing you are reaching for.
+  const hide = () => {
+    closing.current = window.setTimeout(() => setOpen(false), 120);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open, place]);
+
+  useEffect(() => () => window.clearTimeout(closing.current), []);
+
+  return (
+    <>
+      <button
+        ref={anchor}
+        type="button"
+        aria-label="What does this mean?"
+        aria-describedby={open ? id : undefined}
+        aria-expanded={open}
+        onMouseEnter={show}
+        onMouseLeave={hide}
+        onFocus={show}
+        onBlur={hide}
+        onClick={(e) => {
+          // Rows and cards are themselves clickable on several pages; a hint
+          // must never select the row underneath it.
+          e.stopPropagation();
+          e.preventDefault();
+          open ? setOpen(false) : show();
+        }}
+        className={`inline-grid place-items-center w-[14px] h-[14px] rounded-full text-[9px] font-semibold align-middle shrink-0 transition-colors cursor-help ${className}`}
+        style={{
+          border: "1px solid var(--axis)",
+          color: open ? "var(--text-primary)" : "var(--text-muted)",
+          background: open ? "var(--surface-3)" : "transparent",
+          lineHeight: 1,
+        }}
+      >
+        i
+      </button>
+      {open && box &&
+        createPortal(
+          <div
+            id={id}
+            role="tooltip"
+            onMouseEnter={() => window.clearTimeout(closing.current)}
+            onMouseLeave={hide}
+            className="card p-3 shadow-lg text-[12px] leading-relaxed"
+            style={{
+              position: "fixed",
+              top: box.top,
+              left: box.left,
+              width: HINT_WIDTH,
+              zIndex: 60,
+              transform: box.above ? "translateY(-100%)" : undefined,
+              color: "var(--text-secondary)",
+            }}
+          >
+            {text}
+            {technical && (
+              <p className="mt-2 pt-2 text-[11px]"
+                 style={{ borderTop: "1px solid var(--border)", color: "var(--text-muted)" }}>
+                {technical}
+              </p>
+            )}
+            {/* `block`, not `inline-block` -- with no `technical` line between
+                them the link ran straight on from the last sentence. */}
+            <Link to="/glossary" onClick={() => setOpen(false)}
+                  className="mt-2 block text-[11px] underline underline-offset-2"
+                  style={{ color: "var(--series-1)" }}>
+              All terms explained →
+            </Link>
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
+/**
+ * A label and its hint, looked up by the API field name the value is read with.
+ *
+ * Going through the field name rather than passing prose at the call site is
+ * what keeps a column header, the tile on the overview and the glossary page
+ * saying the same thing about the same number.
+ */
+export function TermLabel({ name, label, hideHint }: {
+  name: string;
+  /** Overrides the glossary label where a column needs to be shorter. */
+  label?: string;
+  hideHint?: boolean;
+}) {
+  const found = lookupTerm(name);
+  const text = label ?? found?.label ?? prettify(name);
+  if (!found || hideHint) return <>{text}</>;
+  return (
+    <span className="inline-flex items-center gap-1 whitespace-nowrap">
+      {text}
+      <InfoHint text={found.help} technical={found.technical} />
+    </span>
+  );
+}
 
 export function Card({
   title, subtitle, right, children, className = "", id,
 }: {
-  title?: string; subtitle?: string; right?: ReactNode;
+  title?: string;
+  /** A node, not just a string, so a subtitle can carry a `TermLabel`. */
+  subtitle?: ReactNode;
+  right?: ReactNode;
   children: ReactNode; className?: string;
   /** Anchor target for a `#hash` deep-link from the alert feed. */
   id?: string;
@@ -39,16 +204,24 @@ export function Card({
 /** Stat tile. A hero number is a form in its own right — no chart needed when
  *  the job is a single magnitude. Proportional figures, per the type rule. */
 export function Kpi({
-  label, value, sub, tone, hint,
+  label, value, sub, tone, hint, name,
 }: {
-  label: string; value: ReactNode; sub?: ReactNode;
-  tone?: string; hint?: string;
+  label?: string; value: ReactNode; sub?: ReactNode;
+  tone?: string;
+  /** Explanatory copy. Was a native `title`; now a real, discoverable hint. */
+  hint?: string;
+  /** API field name — takes the label and the hint from the glossary. */
+  name?: string;
 }) {
+  const found = name ? lookupTerm(name) : undefined;
+  const text = label ?? found?.label ?? (name ? prettify(name) : "");
+  const help = hint ?? found?.help;
   return (
-    <div className="card p-4 flex flex-col gap-1" title={hint}>
-      <span className="text-[11px] font-medium uppercase tracking-wider"
+    <div className="card p-4 flex flex-col gap-1">
+      <span className="text-[11px] font-medium uppercase tracking-wider inline-flex items-center gap-1.5"
             style={{ color: "var(--text-muted)" }}>
-        {label}
+        {text}
+        {help && <InfoHint text={help} technical={found?.technical} />}
       </span>
       <span className="text-[26px] leading-tight font-semibold"
             style={{ color: tone ?? "var(--text-primary)" }}>
@@ -111,14 +284,15 @@ export function Spinner({ label = "Loading" }: { label?: string }) {
   );
 }
 
-export function Table({ head, children }: { head: string[]; children: ReactNode }) {
+/** `head` takes nodes as well as strings so a column can carry a `TermLabel`. */
+export function Table({ head, children }: { head: ReactNode[]; children: ReactNode }) {
   return (
     <div className="overflow-x-auto -mx-5 px-5">
       <table className="w-full text-[13px] tnum" style={{ borderCollapse: "collapse" }}>
         <thead>
           <tr>
-            {head.map((h) => (
-              <th key={h} scope="col"
+            {head.map((h, index) => (
+              <th key={index} scope="col"
                   className="text-left font-medium pb-2 pr-4 whitespace-nowrap text-[11px] uppercase tracking-wider"
                   style={{ color: "var(--text-muted)", borderBottom: "1px solid var(--border)" }}>
                 {h}

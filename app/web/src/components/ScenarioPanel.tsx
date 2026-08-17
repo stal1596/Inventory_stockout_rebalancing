@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api, type ScenarioFeed } from "../lib/api";
 import { ACTION_COLORS, ACTION_LABELS, money, num, pct } from "../lib/format";
-import { Card, ErrorState, Note, Spinner } from "./ui";
+import { Card, ErrorState, InfoHint, Note, Spinner } from "./ui";
 import { useApi } from "../lib/useApi";
 
 /**
@@ -50,18 +50,21 @@ export function ScenarioPanel() {
     || applied.horizon !== horizon || applied.margin !== margin || applied.freight !== freight;
 
   return (
-    <Card title="What if the assumptions were different?"
-          subtitle="Re-values every lever, then compares against the standing list for the same positions">
+    <Card title="What if things cost differently?"
+          subtitle="Prices up every option again and shows how the answers change">
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <Knob label="Horizon" value={`${horizon} days`}>
+        <Knob label="Look ahead" value={`${horizon} days`}
+              hint="How far ahead to protect against. A longer window makes more moves look worthwhile.">
           <input type="range" min={7} max={60} step={7} value={horizon}
                  onChange={(e) => setHorizon(Number(e.target.value))} className="w-full" />
         </Knob>
-        <Knob label="Margin rate" value={pct(margin)}>
+        <Knob label="Profit margin" value={pct(margin)}
+              hint="What share of the selling price is profit. Saved sales are valued at this, not at ticket price — the stock was never bought, so its cost was never paid.">
           <input type="range" min={0.05} max={0.9} step={0.05} value={margin}
                  onChange={(e) => setMargin(Number(e.target.value))} className="w-full" />
         </Knob>
-        <Knob label="Freight cost" value={`${freight}×`}>
+        <Knob label="Freight cost" value={`${freight}× normal`}
+              hint="Dearer freight does not just shrink the value of every move — it can change which move wins, so the whole thing is priced up again rather than scaled.">
           <input type="range" min={0.5} max={8} step={0.5} value={freight}
                  onChange={(e) => setFreight(Number(e.target.value))} className="w-full" />
         </Knob>
@@ -72,7 +75,7 @@ export function ScenarioPanel() {
                 disabled={!dirty || scenario.loading}
                 className="rounded-md px-3 py-1.5 text-[13px] font-medium disabled:opacity-40"
                 style={{ background: "var(--series-1)", color: "#fff" }}>
-          {scenario.loading ? "Re-valuing…" : "Run scenario"}
+          {scenario.loading ? "Working it out…" : "See what changes"}
         </button>
         {applied && (
           <button onClick={() => {
@@ -81,18 +84,18 @@ export function ScenarioPanel() {
                   }}
                   className="text-[12px] underline underline-offset-2"
                   style={{ color: "var(--text-muted)" }}>
-            reset to the measured assumptions
+            put everything back
           </button>
         )}
         <span className="ml-auto text-[11px]" style={{ color: "var(--text-muted)" }}>
-          Runs over the whole population — a few seconds the first time.
+          Covers every product — a few seconds the first time.
         </span>
       </div>
 
       {scenario.error && (
         <ErrorState message={scenario.error} onRetry={scenario.refetch} />
       )}
-      {scenario.loading && !scenario.data && <Spinner label="Re-valuing every lever…" />}
+      {scenario.loading && !scenario.data && <Spinner label="Pricing everything up again…" />}
 
       {scenario.data && !scenario.error && (
         <div className="mt-5 pt-4" style={{ borderTop: "1px solid var(--border)" }}>
@@ -100,13 +103,13 @@ export function ScenarioPanel() {
             <Compare label="Leave alone"
                      baseline={pct(scenario.data.delta_vs_default.no_action_share_default ?? 0)}
                      scenario={pct(scenario.data.no_action_share)} />
-            <Compare label="Net value of acting"
+            <Compare label="Worth acting on"
                      baseline={money(scenario.data.delta_vs_default.net_value_default ?? 0)}
                      scenario={money(scenario.data.total_net_value)} />
-            <Compare label="Positions valued"
+            <Compare label="Products priced up"
                      baseline={num(scenario.data.positions)}
                      scenario={num(scenario.data.positions)} />
-            <Compare label="Horizon"
+            <Compare label="Looking ahead"
                      baseline={`${scenario.data.defaults.horizon}d`}
                      scenario={`${scenario.data.horizon}d`} />
           </div>
@@ -137,15 +140,16 @@ export function ScenarioPanel() {
   );
 }
 
-function Knob({ label, value, children }: {
-  label: string; value: string; children: React.ReactNode;
+function Knob({ label, value, hint, children }: {
+  label: string; value: string; hint?: string; children: React.ReactNode;
 }) {
   return (
     <div>
-      <div className="flex items-baseline justify-between mb-1">
-        <span className="text-[11px] uppercase tracking-wider"
+      <div className="flex items-baseline justify-between gap-2 mb-1">
+        <span className="text-[11px] uppercase tracking-wider inline-flex items-center gap-1"
               style={{ color: "var(--text-muted)" }}>
           {label}
+          {hint && <InfoHint text={hint} />}
         </span>
         <span className="text-[13px] tnum font-medium">{value}</span>
       </div>
@@ -168,7 +172,7 @@ function Compare({ label, baseline, scenario }: {
         {scenario}
       </p>
       <p className="text-[11px] tnum" style={{ color: "var(--text-muted)" }}>
-        standing: {baseline}
+        normally: {baseline}
       </p>
     </div>
   );

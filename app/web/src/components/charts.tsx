@@ -100,11 +100,11 @@ export function DriverWaterfall({ drivers }: { drivers: Driver[] }) {
       <div className="flex items-center gap-4 mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
         <span className="flex items-center gap-1.5">
           <span className="w-2.5 h-2.5 rounded-sm" style={{ background: "var(--status-critical)" }} />
-          costs stock life
+          makes stock run out sooner
         </span>
         <span className="flex items-center gap-1.5">
           <span className="w-2.5 h-2.5 rounded-sm" style={{ background: "var(--series-1)" }} />
-          buys stock life
+          makes it last longer
         </span>
       </div>
     </div>
@@ -136,9 +136,9 @@ export function FanChart({ data, height = 240 }: {
               <TipShell
                 title={`Day ${label}`}
                 rows={[
-                  ["P90 (optimistic)", num(payload[0]?.payload.p90_stock, 0)],
-                  ["Median", num(payload[0]?.payload.p50_stock, 0), "var(--series-1)"],
-                  ["P10 (pessimistic)", num(payload[0]?.payload.p10_stock, 0)],
+                  ["If things go well", num(payload[0]?.payload.p90_stock, 0)],
+                  ["Most likely", num(payload[0]?.payload.p50_stock, 0), "var(--series-1)"],
+                  ["If things go badly", num(payload[0]?.payload.p10_stock, 0)],
                 ]}
               />
             ) : null
@@ -180,8 +180,8 @@ export function ProbabilityCurve({ baseline, scenario, height = 220 }: {
             active && payload?.length ? (
               <TipShell title={`Within ${label} days`}
                         rows={[
-                          ["Baseline", pct(payload[0]?.payload.baseline, 1), "var(--series-1)"],
-                          ["Scenario", pct(payload[0]?.payload.scenario, 1), "var(--series-2)"],
+                          ["As things stand", pct(payload[0]?.payload.baseline, 1), "var(--series-1)"],
+                          ["Your what-if", pct(payload[0]?.payload.scenario, 1), "var(--series-2)"],
                         ]} />
             ) : null
           }
@@ -204,7 +204,7 @@ export function StockoutHistogram({ data, height = 180 }: {
     return (
       <div className="grid place-items-center text-[12px] py-10"
            style={{ color: "var(--text-muted)" }}>
-        No simulated path runs out within the horizon.
+        Not one run sold out inside this window.
       </div>
     );
   }
@@ -220,7 +220,7 @@ export function StockoutHistogram({ data, height = 180 }: {
                  content={({ active, payload, label }) =>
                    active && payload?.length ? (
                      <TipShell title={`Day ${label}`}
-                               rows={[["Share of runs", pct(payload[0]?.payload.share, 1)]]} />
+                               rows={[["Ran out on this day", pct(payload[0]?.payload.share, 1)]]} />
                    ) : null } />
         <Bar dataKey="share" fill="var(--series-1)" radius={[4, 4, 0, 0]} isAnimationActive={false} />
       </BarChart>

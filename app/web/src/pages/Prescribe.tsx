@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { api, exportUrl, type Recommendation } from "../lib/api";
 import { ACTION_COLORS, ACTION_LABELS, money, num, pct } from "../lib/format";
 import {
-  Card, DownloadCsv, Empty, ErrorState, Kpi, Loadable, Note, Spinner, Table,
+  Card, DownloadCsv, Empty, ErrorState, Kpi, Loadable, Note, Spinner, Table, TermLabel,
 } from "../components/ui";
 import { ScenarioPanel } from "../components/ScenarioPanel";
 import { useApi } from "../lib/useApi";
@@ -40,31 +40,32 @@ export function Prescribe() {
 
   return (
     <div className="flex flex-col gap-5">
-      <Loadable state={feed} label="Valuing every lever…">
+      <Loadable state={feed} label="Pricing up every option…">
         {(data) => {
           const acted = data.mix.filter((m) => m.recommended_action !== "no_action");
           const total = data.mix.reduce((sum, m) => sum + m.positions, 0) || 1;
           return (
             <>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                <Kpi label="Net value of acting" value={money(data.total_net_value)}
-                     sub="margin protected less freight" />
-                <Kpi label="Leave alone" value={pct(data.no_action_share)}
-                     sub="every lever costs more than it saves"
-                     hint="An engine that always acts is not discriminating." />
+                <Kpi name="net_value" label="Worth acting on" value={money(data.total_net_value)}
+                     sub="after paying for the moves"
+                     hint="What acting on everything below is worth: the profit kept, less what the transfers and expedited deliveries cost. Profit is counted at margin — stock you never sold also never cost you anything to buy." />
+                <Kpi name="no_action_share" label="Leave alone" value={pct(data.no_action_share)}
+                     sub="acting would cost more than it saves"
+                     hint="Most products need nothing done. A tool that always finds something to do is not really choosing — it just spends your freight budget." />
                 {acted.slice(0, 2).map((m) => (
                   <Kpi key={m.recommended_action}
                        label={ACTION_LABELS[m.recommended_action] ?? m.recommended_action}
                        value={num(m.positions)}
-                       sub={`${money(m.margin_protected)} margin protected`} />
+                       sub={`${money(m.margin_protected)} of profit kept`} />
                 ))}
               </div>
 
               <ScenarioPanel />
 
               <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,400px)] gap-5 items-start">
-                <Card title="Recommended actions"
-                      subtitle={`${num(data.total)} positions · horizon ${data.horizon} days`}
+                <Card title="What to do"
+                      subtitle={`${num(data.total)} products · looking ${data.horizon} days ahead`}
                       right={
                         <span className="flex items-center gap-2">
                           <select value={action} onChange={(e) => setAction(e.target.value)}
@@ -100,9 +101,18 @@ export function Prescribe() {
                     ))}
                   </div>
 
-                  {!data.rows.length ? <Empty>Nothing to act on.</Empty> : (
+                  {!data.rows.length ? (
+                    <Empty>Nothing here needs acting on right now.</Empty>
+                  ) : (
                     <>
-                      <Table head={["SKU", "Store", "Action", "Speed", "Saves", "Margin", "Net value"]}>
+                      <Table head={[
+                        "Product", "Store",
+                        <TermLabel key="action" name="recommended_action" />,
+                        <TermLabel key="speed" name="speed" />,
+                        <TermLabel key="saved" name="units_saved" />,
+                        <TermLabel key="margin" name="margin_protected" label="Profit kept" />,
+                        <TermLabel key="net" name="net_value" />,
+                      ]}>
                         {data.rows.map((row: Recommendation) => {
                           const active = selection?.storeId === row.store_id &&
                                          selection?.skuUid === row.sku_uid;
@@ -166,24 +176,26 @@ export function Prescribe() {
                   <Note>{data.caveat}</Note>
                 </Card>
 
-                <div className="xl:sticky xl:top-[76px]">
+                <div className="xl:sticky xl:top-[96px]">
                   {!selection ? (
-                    <Card title="Recommendation">
-                      <Empty>Select a row to see the full reasoning.</Empty>
+                    <Card title="The full story">
+                      <Empty>Pick a row on the left to see the reasoning behind it.</Empty>
                     </Card>
                   ) : detail.error ? (
-                    <Card title="Recommendation">
+                    <Card title="The full story">
                       <ErrorState message={detail.error} onRetry={detail.refetch} />
                     </Card>
                   ) : !detail.data ? (
-                    <Card title="Recommendation"><Spinner label="Reading the reasoning…" /></Card>
+                    <Card title="The full story"><Spinner label="Reading the reasoning…" /></Card>
                   ) : (
-                    <Card title="Recommendation"
+                    <Card title="The full story"
                           subtitle={`${detail.data.sku_uid} at ${detail.data.store_id}`}>
                       <div className="grid grid-cols-3 gap-2 mb-4">
-                        <Fact label="Saves" value={num(detail.data.units_saved, 1)} />
-                        <Fact label="Margin" value={money(detail.data.margin_protected)} />
-                        <Fact label="Net value" value={money(detail.data.net_value)} />
+                        <Fact name="units_saved" label="Saves" value={num(detail.data.units_saved, 1)} />
+                        <Fact name="margin_protected" label="Profit kept"
+                              value={money(detail.data.margin_protected)} />
+                        <Fact name="net_value" label="Net value"
+                              value={money(detail.data.net_value)} />
                       </div>
                       <Story label="Problem" text={detail.data.problem} />
                       <Story label="Evidence" text={detail.data.evidence} />
@@ -194,7 +206,7 @@ export function Prescribe() {
                       <div className="mt-5 pt-4" style={{ borderTop: "1px solid var(--border)" }}>
                         <p className="text-[11px] uppercase tracking-wider mb-2"
                            style={{ color: "var(--text-muted)" }}>
-                          Every lever considered
+                          The other options we checked
                         </p>
                         <div className="flex flex-col gap-1.5">
                           {detail.data.options.map((option) => (
@@ -221,8 +233,9 @@ export function Prescribe() {
                           ))}
                         </div>
                         <Note>
-                          Showing the rejected options is deliberate: a recommendation
-                          without its alternatives is an oracle, not a decision.
+                          The options we turned down are shown on purpose. A
+                          recommendation you cannot argue with is not a
+                          recommendation — it is an instruction.
                         </Note>
                       </div>
 
@@ -269,11 +282,11 @@ function Pager({ total, offset, shown, onOffset }: {
   );
 }
 
-function Fact({ label, value }: { label: string; value: string }) {
+function Fact({ name, label, value }: { name: string; label?: string; value: string }) {
   return (
     <div className="rounded-md px-2.5 py-2" style={{ background: "var(--surface-3)" }}>
       <p className="text-[10px] uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
-        {label}
+        <TermLabel name={name} label={label} />
       </p>
       <p className="text-[14px] font-medium tnum">{value}</p>
     </div>

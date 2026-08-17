@@ -3,9 +3,10 @@ import { api, type Position, type PositionDetail } from "../lib/api";
 import { exportUrl } from "../lib/api";
 import { bandColor, days, featureLabel, money, num, pct } from "../lib/format";
 import {
-  BandBadge, Card, Empty, ErrorState, Loadable, Note, Spinner, Table,
+  BandBadge, Card, Empty, ErrorState, InfoHint, Loadable, Note, Spinner, Table, TermLabel,
 } from "../components/ui";
 import { DepletionChart, DriverWaterfall } from "../components/charts";
+import { term } from "../lib/glossary";
 import { useApi, useDebounced } from "../lib/useApi";
 import { DEFAULT_HORIZON, useStore } from "../store";
 
@@ -44,7 +45,7 @@ export function Risk() {
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center gap-2">
         <Select value={filters.band ?? ""} onChange={(v) => set({ band: v || undefined })}
-                options={[["", "All bands"],
+                options={[["", "All priorities"],
                           ...(options.data?.bands ?? []).map((b) => [b, b] as [string, string])]} />
         <Select value={filters.storeId ?? ""} onChange={(v) => set({ storeId: v || undefined })}
                 options={[["", "All stores"],
@@ -56,19 +57,19 @@ export function Risk() {
             Without it the 7-day and 28-day alerts opened a 14-day table. */}
         <Select value={String(horizon)} onChange={(v) => set({ horizon: Number(v) })}
                 options={(options.data?.horizons ?? HORIZONS).map(
-                  (h) => [String(h), `${h}-day horizon`] as [string, string])} />
+                  (h) => [String(h), `Looking ${h} days ahead`] as [string, string])} />
         <input
           value={filters.search ?? ""}
           onChange={(e) => set({ search: e.target.value || undefined })}
-          placeholder="Search SKU or store…"
-          aria-label="Search SKU or store"
+          placeholder="Search a product or store…"
+          aria-label="Search a product or store"
           className="rounded-md px-3 py-1.5 text-[13px] w-[200px] outline-none"
           style={{ background: "var(--surface-1)", border: "1px solid var(--border)",
                    color: "var(--text-primary)" }}
         />
         <span className="ml-auto text-[12px] tnum" style={{ color: "var(--text-secondary)" }}>
           {positions.data
-            ? `${num(positions.data.total)} positions · ${money(positions.data.exposure)} exposed`
+            ? `${num(positions.data.total)} products · ${money(positions.data.exposure)} of sales at stake`
             : ""}
         </span>
         {/* The DEBOUNCED search, the same value the table was built from. Reading
@@ -93,15 +94,27 @@ export function Risk() {
 
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,400px)] gap-5 items-start">
         <div className="flex flex-col gap-5 min-w-0">
-          <Card title="Positions at risk" className="min-w-0"
-                subtitle="Ranked by expected lost revenue. Select one to see why.">
-            <Loadable state={positions} label="Scoring open positions…">
+          <Card title="Products at risk" className="min-w-0"
+                subtitle="Worst first, by the money at stake. Pick one to see why it is at risk.">
+            <Loadable state={positions} label="Working out what is at risk…">
               {(data) => !data.rows.length ? (
-                <Empty>No positions match these filters.</Empty>
+                <Empty>
+                  No products match these filters. Try widening the priority or
+                  clearing the search.
+                </Empty>
               ) : (
                 <>
-                  <Table head={["SKU", "Store", "Band", "On hand", "Cover",
-                                `P(out) ${horizon}d`, "In transit", "Lost units", "Exposure"]}>
+                  <Table head={[
+                    "Product", "Store",
+                    <TermLabel key="band" name="risk_band" />,
+                    <TermLabel key="stock" name="stock_on_hand" />,
+                    <TermLabel key="cover" name="cover_days_now" label="Days left" />,
+                    <TermLabel key="p" name={`p_stockout_${horizon}d`}
+                               label={`Runs out in ${horizon}d`} />,
+                    <TermLabel key="transit" name="intransit_units" label="On its way" />,
+                    <TermLabel key="lost" name="expected_lost_units" label="Units we'd miss" />,
+                    <TermLabel key="rev" name="expected_lost_revenue" label="Revenue at risk" />,
+                  ]}>
                     {data.rows.map((row) => {
                       const active = selection?.storeId === row.store_id &&
                                      selection?.skuUid === row.sku_uid;
@@ -150,20 +163,33 @@ export function Risk() {
 
           {/* What drives risk across the whole book, not just the selected SKU.
               The endpoint existed and no page called it. */}
-          <Card title="What drives risk across the population"
-                subtitle="How often each feature is the largest single contributor">
-            <Loadable state={drivers} label="Ranking drivers…">
+          <Card title="What is driving risk overall"
+                subtitle="The reasons that come up most often across everything you sell">
+            <Loadable state={drivers} label="Working out the main reasons…">
               {(data) => !data.drivers.length ? (
-                <Empty>No driver summary available.</Empty>
+                <Empty>Not enough scored products to summarise yet.</Empty>
               ) : (
-                <Table head={["Feature", "Top driver for", "Share of positions", "Coefficient"]}>
+                <Table head={["Reason", "Main reason for", "Share of products", "Pushes risk"]}>
                   {data.drivers.map((driver) => (
                     <tr key={driver.feature} style={{ borderBottom: "1px solid var(--border)" }}>
-                      <td className="py-2 pr-4">{featureLabel(driver.feature)}</td>
-                      <td className="py-2 pr-4">{num(driver.times_top_driver)}</td>
+                      <td className="py-2 pr-4">
+                        <DriverName feature={driver.feature} />
+                      </td>
+                      <td className="py-2 pr-4">{num(driver.times_top_driver)} products</td>
                       <td className="py-2 pr-4">{pct(driver.share_of_rows, 1)}</td>
+                      {/* The raw coefficient meant nothing standing alone in a
+                          column; direction and strength is what a planner reads
+                          it for, and the number stays in the hint. */}
                       <td className="py-2 pr-4" style={{ color: "var(--text-secondary)" }}>
-                        {num(driver.coefficient, 3)}
+                        <span className="inline-flex items-center gap-1.5">
+                          {driver.coefficient < 0 ? "up" : "down"}
+                          <Strength value={Math.abs(driver.coefficient)} />
+                          <InfoHint
+                            text={driver.coefficient < 0
+                              ? "A higher value here shortens how long the stock lasts."
+                              : "A higher value here makes the stock last longer."}
+                            technical={`coefficient ${num(driver.coefficient, 3)} on the log-days scale`} />
+                        </span>
                       </td>
                     </tr>
                   ))}
@@ -171,24 +197,26 @@ export function Risk() {
               )}
             </Loadable>
             <Note>
-              A feature can top this list and still add little on its own —
-              `store_stockout_rate_90d` carries the largest non-intercept
-              coefficient and is a store fixed effect with no lever behind it.
+              A reason can top this list and still be little help. “
+              {featureLabel("store_stockout_rate_90d")}” is the clearest example:
+              it marks stores that run out more often than the rest, which is
+              worth knowing, but there is no lever behind it — you cannot fix one
+              product by fixing that number.
             </Note>
           </Card>
         </div>
 
-        <div className="flex flex-col gap-5 xl:sticky xl:top-[76px] min-w-0">
+        <div className="flex flex-col gap-5 xl:sticky xl:top-[96px] min-w-0">
           {!selection ? (
-            <Card title="Why is this SKU at risk?">
-              <Empty>Select a position to see its drivers.</Empty>
+            <Card title="Why is this at risk?">
+              <Empty>Pick a row on the left to see what is driving it.</Empty>
             </Card>
           ) : detail.error ? (
-            <Card title="Why is this SKU at risk?">
+            <Card title="Why is this at risk?">
               <ErrorState message={detail.error} onRetry={detail.refetch} />
             </Card>
           ) : !detail.data ? (
-            <Card title="Why is this SKU at risk?"><Spinner label="Explaining…" /></Card>
+            <Card title="Why is this at risk?"><Spinner label="Working out why…" /></Card>
           ) : (
             <DetailPanel detail={detail.data} horizon={horizon}
                          onSimulate={() => focus(selection, "simulate")}
@@ -207,13 +235,13 @@ function FilterChips({ filters, horizon, onRemove, onClear }: {
   onClear: () => void;
 }) {
   const chips: [string, string][] = [];
-  if (filters.band) chips.push(["band", `Band: ${filters.band}`]);
+  if (filters.band) chips.push(["band", `Priority: ${filters.band}`]);
   if (filters.storeId) chips.push(["storeId", `Store: ${filters.storeId}`]);
   if (filters.category) chips.push(["category", `Category: ${filters.category}`]);
-  if (filters.horizon) chips.push(["horizon", `${horizon}-day horizon`]);
+  if (filters.horizon) chips.push(["horizon", `Looking ${horizon} days ahead`]);
   if (filters.minProbability !== undefined)
-    chips.push(["minProbability", `Risk ≥ ${pct(filters.minProbability)}`]);
-  if (filters.coverage) chips.push(["coverage", "Inbound cover short"]);
+    chips.push(["minProbability", `At least ${pct(filters.minProbability)} chance of running out`]);
+  if (filters.coverage) chips.push(["coverage", "Not enough stock on the way"]);
   if (filters.search) chips.push(["search", `“${filters.search}”`]);
   if (!chips.length) return null;
 
@@ -274,35 +302,40 @@ function DetailPanel({ detail, horizon, onSimulate, onPrescribe }: {
 
   return (
     <>
-      <Card title="Why is this SKU at risk?"
+      <Card title="Why is this at risk?"
             subtitle={`${position.sku_uid} at ${position.store_id}`}
             right={<BandBadge band={position.risk_band} />}>
         <div className="grid grid-cols-4 gap-3 mb-4">
-          <MiniStat label="On hand" value={num(position.stock_on_hand)} />
-          <MiniStat label="Cover" value={days(position.cover_days_now)} />
-          <MiniStat label={`P(out) ${horizon}d`} value={pct(probability)}
+          <MiniStat name="stock_on_hand" value={num(position.stock_on_hand)} />
+          <MiniStat name="cover_days_now" label="Days left"
+                    value={days(position.cover_days_now)} />
+          {/* Four tiles in a narrow panel — a longer label truncates. The
+              horizon is already in the card the user came from. */}
+          <MiniStat name={`p_stockout_${horizon}d`} label="Runs out"
+                    value={pct(probability)}
                     tone={(probability ?? 0) > 0.5 ? bandColor.Critical : undefined} />
           {/* This position's predicted stock life, which the panel never showed —
               only the typical position's, in the note below. */}
-          <MiniStat label="Predicted life" value={days(detail.predicted_median_days)} />
+          <MiniStat name="predicted_median_days" label="Should last"
+                    value={days(detail.predicted_median_days)} />
         </div>
 
         <DriverWaterfall drivers={detail.drivers} />
 
         <Note>
-          Each bar is that feature's exact contribution to predicted stock life,
-          in days, against a typical position ({detail.reference_median_days}d).
-          {" "}{detail.explanation}
+          Each bar is how many days that one reason adds to, or takes off, how
+          long the stock should last — measured against a typical product, which
+          lasts {detail.reference_median_days} days.{" "}{detail.explanation}
         </Note>
       </Card>
 
-      <Card title="Projected depletion"
-            subtitle={outAt ? `Runs dry around day ${outAt.day} at the current rate`
-                            : "Survives the 28-day window at the current rate"}>
+      <Card title="If nothing changes"
+            subtitle={outAt ? `The shelf empties around day ${outAt.day} at today's selling rate`
+                            : "Stock holds out for the next four weeks at today's selling rate"}>
         <DepletionChart data={detail.timeline} height={170} />
         <Note>
-          A straight-line projection at the observed demand rate, with no
-          replenishment and no uncertainty. The simulator adds both.
+          A straight line at the current selling rate, with no deliveries and no
+          allowance for a busy week. The simulator adds both.
         </Note>
         <div className="grid grid-cols-2 gap-2 mt-3">
           <button onClick={onSimulate}
@@ -321,11 +354,43 @@ function DetailPanel({ detail, horizon, onSimulate, onPrescribe }: {
   );
 }
 
-function MiniStat({ label, value, tone }: { label: string; value: string; tone?: string }) {
+/** A driver's plain name, with its glossary explanation on the icon beside it. */
+function DriverName({ feature }: { feature: string }) {
+  const found = term(feature);
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      {featureLabel(feature)}
+      {found && <InfoHint text={found.help} technical={found.technical} />}
+    </span>
+  );
+}
+
+/**
+ * Three dots instead of a number.
+ *
+ * The coefficient is on the log-days scale, so `0.601` is not a quantity a
+ * planner can do anything with; how hard this reason pushes, relative to the
+ * others, is. The number itself stays one hover away.
+ */
+function Strength({ value }: { value: number }) {
+  const filled = value >= 0.4 ? 3 : value >= 0.15 ? 2 : 1;
+  return (
+    <span className="inline-flex gap-[3px]" aria-label={`strength ${filled} of 3`}>
+      {[0, 1, 2].map((i) => (
+        <span key={i} className="w-[5px] h-[5px] rounded-full"
+              style={{ background: i < filled ? "var(--series-1)" : "var(--surface-3)" }} />
+      ))}
+    </span>
+  );
+}
+
+function MiniStat({ name, label, value, tone }: {
+  name: string; label?: string; value: string; tone?: string;
+}) {
   return (
     <div className="rounded-md px-3 py-2" style={{ background: "var(--surface-3)" }}>
       <p className="text-[10px] uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
-        {label}
+        <TermLabel name={name} label={label} />
       </p>
       <p className="text-[16px] font-semibold tnum" style={{ color: tone }}>{value}</p>
     </div>

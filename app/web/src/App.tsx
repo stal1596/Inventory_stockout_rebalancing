@@ -10,6 +10,7 @@ import { Policy } from "./pages/Policy";
 import { Inventory } from "./pages/Inventory";
 import { Network } from "./pages/Network";
 import { Data } from "./pages/Data";
+import { Glossary } from "./pages/Glossary";
 import { Evidence } from "./pages/Evidence";
 import { Quality } from "./pages/Quality";
 import { Backtests } from "./pages/Backtests";
@@ -95,6 +96,7 @@ export function App() {
           <Route path="/policy" element={<Policy />} />
           <Route path="/network" element={<Network />} />
           <Route path="/data" element={<Data />} />
+          <Route path="/glossary" element={<Glossary />} />
           <Route path="/evidence" element={<Evidence />} />
           <Route path="/quality" element={<Quality />} />
           <Route path="/backtests" element={<Backtests />} />
